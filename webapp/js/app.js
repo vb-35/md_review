@@ -1350,7 +1350,10 @@ function renderThreads() {
       <div class="thread-meta">
         <span class="author">${esc(thread.createdByUsername || '?')}</span>
         <span class="time">${esc(formatDate(thread.createdAt))}</span>
-        <button class="btn-resolve" ${!canResolve ? 'disabled' : ''}>${thread.resolved ? 'Unresolve' : 'Resolve'}</button>
+        <div class="thread-actions">
+          <button class="btn-resolve" ${!canResolve ? 'disabled' : ''}>${thread.resolved ? 'Unresolve' : 'Resolve'}</button>
+          ${thread.resolved ? `<button class="btn-delete-thread danger" ${!canResolve ? 'disabled' : ''}>Delete</button>` : ''}
+        </div>
       </div>
       ${getAnchorLabel(thread.anchor)}
       ${thread.resolved ? `<div class="resolved-badge">Resolved${thread.resolvedAt ? ` on ${esc(new Date(thread.resolvedAt).toLocaleDateString())}` : ''}</div>` : ''}
@@ -1410,6 +1413,24 @@ function renderThreads() {
         alert(`Resolve failed: ${err.message}`);
       }
     });
+
+    const deleteBtn = div.querySelector('.btn-delete-thread');
+    if (deleteBtn) {
+      deleteBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        if (!canResolve) return;
+        if (!window.confirm('Delete this resolved thread permanently?')) return;
+        try {
+          const context = currentCommentContext();
+          if (!context) throw new Error('Missing comment context for current file version');
+          await api('DELETE', `/comments/threads/${thread.id}`, context);
+          await loadThreads();
+          updateCommentMarkers();
+        } catch (err) {
+          alert(`Delete failed: ${err.message}`);
+        }
+      });
+    }
 
     container.appendChild(div);
   });

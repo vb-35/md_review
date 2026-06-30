@@ -194,6 +194,8 @@ try:
     assert r.status_code == 201
     r = viewer_client.post(f'/api/comments/threads/{viewer_thread_id}/resolve', json=doc_context)
     assert r.status_code == 403
+    r = viewer_client.delete(f'/api/comments/threads/{viewer_thread_id}', json=doc_context)
+    assert r.status_code == 403
     print("PASS: viewer_can_comment_but_not_resolve")
 
     r = editor_client.get(f'/api/documents/{doc_id}')
@@ -240,6 +242,8 @@ try:
     assert anchor['selectedText'] == 'Editor'
     r2 = editor_client.post('/api/comment-lines', json={**doc_context, 'threadId': tid, 'body': 'Great work'})
     assert r2.status_code == 201
+    r_unresolved_delete = editor_client.delete(f'/api/comments/threads/{tid}', json=doc_context)
+    assert r_unresolved_delete.status_code == 400
     r3 = editor_client.post(f'/api/comments/threads/{tid}/resolve', json=doc_context)
     assert r3.status_code == 200
     comment_file = os.path.join(REPO_DIR, '.md-review', 'comments', *doc_context['filePath'].split('/'), f"{doc_context['commitSha']}.json")
@@ -280,6 +284,17 @@ try:
         stored_comments = json.load(handle)
     stored_thread = next(t for t in stored_comments['threads'] if t['id'] == tid)
     assert len(stored_thread['comments']) == 2
+    r5 = editor_client.delete(f'/api/comments/threads/{tid}', json=later_context)
+    assert r5.status_code == 200
+    assert r5.get_json()['deleted'] is True
+    with open(comment_file, 'r', encoding='utf-8') as handle:
+        stored_comments = json.load(handle)
+    assert not any(t['id'] == tid for t in stored_comments['threads'])
+    deleted_listing = editor_client.get(
+        f"/api/documents/{doc_id}/threads?commitSha={later_context['commitSha']}&filePath={later_context['filePath']}"
+    )
+    assert deleted_listing.status_code == 200
+    assert not any(t['id'] == tid for t in deleted_listing.get_json())
     empty_listing = editor_client.get(
         f"/api/documents/{doc_id}/threads?commitSha={'0' * 40}&filePath={doc_context['filePath']}"
     )

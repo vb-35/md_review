@@ -797,6 +797,11 @@ select {
   color: var(--fg-dim);
 }
 
+.thread-actions {
+  display: flex;
+  gap: 6px;
+}
+
 .thread-meta {
   padding: 10px 12px;
   border-bottom: 1px solid var(--border);

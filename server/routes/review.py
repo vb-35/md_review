@@ -6,6 +6,7 @@ from utils.diff import compute_diff
 from utils.repo_storage import (
     load_applicable_comment_stores,
     load_comment_store,
+    list_applicable_comment_store_commits,
     normalize_repo_relative_path,
     save_comment_store,
 )
@@ -315,3 +316,31 @@ def toggle_resolve(thread_id):
         'resolvedBy': thread['resolvedBy'],
         'resolvedAt': thread['resolvedAt']
     })
+
+
+@review_bp.route('/comments/threads/<thread_id>', methods=['DELETE'])
+@require_auth
+def delete_thread(thread_id):
+    uid = session['user_id']
+    data = request.get_json() or {}
+    context, store, error = require_thread_edit_context(thread_id, uid, data)
+    if error:
+        return error
+    edit_error = require_document_edit(context['documentId'], uid)
+    if edit_error:
+        return edit_error
+
+    thread = next(t for t in store['threads'] if t['id'] == thread_id)
+    if not thread.get('resolved'):
+        return jsonify({'error': 'Resolved thread required'}), 400
+
+    changed = False
+    for item_commit in list_applicable_comment_store_commits(context['filePath'], context['commitSha']):
+        item_store = load_comment_store(context['filePath'], item_commit)
+        original_count = len(item_store.get('threads', []))
+        item_store['threads'] = [item for item in item_store.get('threads', []) if item.get('id') != thread_id]
+        if len(item_store['threads']) != original_count:
+            save_comment_store(context['filePath'], item_commit, item_store)
+            changed = True
+
+    return jsonify({'id': thread_id, 'deleted': changed})
