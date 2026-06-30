@@ -8,6 +8,7 @@ const API = (() => {
 
 const SETTINGS_KEY_THEME = 'md-review.theme';
 const SETTINGS_KEY_SYNC_VIEW = 'md-review.sync-view';
+const SETTINGS_KEY_JUSTIFY_PREVIEW = 'md-review.justify-preview';
 const HIGHLIGHT_THEME_DARK = 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css';
 const HIGHLIGHT_THEME_LIGHT = 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css';
 
@@ -38,13 +39,15 @@ function loadSettings() {
   const theme = localStorage.getItem(SETTINGS_KEY_THEME);
   return {
     theme: theme === 'light' ? 'light' : 'dark',
-    syncView: localStorage.getItem(SETTINGS_KEY_SYNC_VIEW) === 'true'
+    syncView: localStorage.getItem(SETTINGS_KEY_SYNC_VIEW) === 'true',
+    justifyPreview: localStorage.getItem(SETTINGS_KEY_JUSTIFY_PREVIEW) !== 'false'
   };
 }
 
 function saveSettings() {
   localStorage.setItem(SETTINGS_KEY_THEME, settings.theme);
   localStorage.setItem(SETTINGS_KEY_SYNC_VIEW, String(settings.syncView));
+  localStorage.setItem(SETTINGS_KEY_JUSTIFY_PREVIEW, String(settings.justifyPreview));
 }
 
 function applyTheme(theme) {
@@ -59,6 +62,9 @@ function applySettings() {
   applyTheme(settings.theme);
   const syncToggle = $('#toggle-sync-view');
   if (syncToggle) syncToggle.checked = settings.syncView;
+  const justifyToggle = $('#toggle-justify-preview');
+  if (justifyToggle) justifyToggle.checked = settings.justifyPreview;
+  document.body.classList.toggle('preview-justify-disabled', !settings.justifyPreview);
   document.querySelectorAll('input[name="theme"]').forEach((input) => {
     input.checked = input.value === settings.theme;
   });
@@ -1457,6 +1463,12 @@ document.querySelectorAll('input[name="theme"]').forEach((input) => {
 $('#toggle-sync-view').addEventListener('change', (event) => {
   settings.syncView = event.target.checked;
   saveSettings();
+});
+
+$('#toggle-justify-preview').addEventListener('change', (event) => {
+  settings.justifyPreview = event.target.checked;
+  saveSettings();
+  applySettings();
 });
 
 $('#btn-settings').addEventListener('click', () => toggleSettingsPanel());

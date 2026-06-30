@@ -612,12 +612,14 @@ select {
 .markdown-body p {
   margin: 8px 0;
   line-height: 1.7;
+  text-align: justify;
 }
 
 .markdown-body ul,
 .markdown-body ol {
   padding-left: 24px;
   margin: 8px 0;
+  text-align: justify;
 }
 
 .markdown-body li {
@@ -650,6 +652,7 @@ select {
   padding: 8px 16px;
   margin: 12px 0;
   color: var(--fg-dim);
+  text-align: left;
 }
 
 .markdown-body img {
@@ -672,6 +675,12 @@ select {
 
 .markdown-body th {
   background: var(--table-head-bg);
+}
+
+body.preview-justify-disabled .markdown-body p,
+body.preview-justify-disabled .markdown-body ul,
+body.preview-justify-disabled .markdown-body ol {
+  text-align: left;
 }
 
 .math-block {
