@@ -1,8 +1,9 @@
 import uuid
 from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify, session
-from models import get_db, get_document_for_user, user_owns_thread, user_can_edit_document
+from models import get_db, get_document_for_user, user_can_edit_document
 from utils.diff import compute_diff
+from utils.repo_storage import load_comment_store, normalize_repo_relative_path, save_comment_store
 
 review_bp = Blueprint('review', __name__)
 
@@ -127,58 +128,112 @@ def revert_version(version_id):
     conn.commit()
     return jsonify({'id': new_version_id, 'version': next_version, 'revertedFrom': reverted_from})
 
-# ===== Comments / Threads (unchanged) =====
+# ===== Comments / Threads =====
+
+def normalize_comment_context(data):
+    if not data or not data.get('documentId'):
+        return None, (jsonify({'error': 'documentId required'}), 400)
+    if not data.get('commitSha'):
+        return None, (jsonify({'error': 'commitSha required'}), 400)
+    if not data.get('filePath'):
+        return None, (jsonify({'error': 'filePath required'}), 400)
+    try:
+        file_path = normalize_repo_relative_path(data['filePath'])
+    except ValueError as exc:
+        return None, (jsonify({'error': str(exc)}), 400)
+    return {
+        'documentId': data['documentId'],
+        'commitSha': data['commitSha'],
+        'filePath': file_path,
+    }, None
+
+
+def serialize_thread(thread):
+    thread = dict(thread)
+    thread.setdefault('comments', [])
+    thread.setdefault('anchor', None)
+    thread.setdefault('resolved', False)
+    thread.setdefault('resolvedBy', None)
+    thread.setdefault('resolvedAt', None)
+    return thread
+
+
+def require_thread_edit_context(thread_id, uid, data):
+    context, error = normalize_comment_context(data)
+    if error:
+        return None, None, error
+    access_error = require_document_access(context['documentId'], uid)
+    if access_error:
+        return None, None, access_error
+    store = load_comment_store(context['filePath'], context['commitSha'])
+    thread = next((t for t in store.get('threads', []) if t.get('id') == thread_id), None)
+    if not thread:
+        return None, None, (jsonify({'error': 'Not found'}), 404)
+    return context, store, None
 
 @review_bp.route('/comments/threads', methods=['POST'])
 @require_auth
 def create_thread():
     uid = session['user_id']
     data = request.get_json()
-    if not data or not data.get('documentId'):
-        return jsonify({'error': 'documentId required'}), 400
+    context, error = normalize_comment_context(data)
+    if error:
+        return error
 
     thread_id = str(uuid.uuid4())
-    doc_id = data['documentId']
-    cs_id = data.get('changeSetId')
     now = datetime.now(timezone.utc).isoformat()
 
-    ownership_error = require_document_access(doc_id, uid)
+    ownership_error = require_document_access(context['documentId'], uid)
     if ownership_error:
         return ownership_error
 
-    conn = get_db()
-    conn.execute(
-        "INSERT INTO comment_threads (id, document_id, change_set_id, created_by, created_at) VALUES (?, ?, ?, ?, ?)",
-        (thread_id, doc_id, cs_id, uid, now)
-    )
-    conn.commit()
+    store = load_comment_store(context['filePath'], context['commitSha'])
+    thread = {
+        'id': thread_id,
+        'documentId': context['documentId'],
+        'filePath': context['filePath'],
+        'commitSha': context['commitSha'],
+        'changeSetId': data.get('changeSetId'),
+        'createdBy': uid,
+        'createdAt': now,
+        'createdByUsername': session.get('username', ''),
+        'resolved': False,
+        'resolvedBy': None,
+        'resolvedAt': None,
+        'comments': [],
+        'anchor': None,
+    }
 
     if data.get('body'):
-        comment_id = str(uuid.uuid4())
-        conn.execute(
-            "INSERT INTO comments (id, thread_id, user_id, body, created_at) VALUES (?, ?, ?, ?, ?)",
-            (comment_id, thread_id, uid, data['body'], now)
-        )
-        conn.commit()
+        thread['comments'].append({
+            'id': str(uuid.uuid4()),
+            'threadId': thread_id,
+            'userId': uid,
+            'body': data['body'],
+            'createdAt': now,
+            'username': session.get('username', ''),
+        })
 
     if data.get('anchor'):
         anchor = data['anchor']
-        anchor_id = str(uuid.uuid4())
-        conn.execute(
-            "INSERT INTO comment_anchors (id, thread_id, start_line, end_line, start_offset, end_offset, selected_text) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                anchor_id,
-                thread_id,
-                anchor.get('startLine', 1),
-                anchor.get('endLine', 1),
-                anchor.get('startOffset'),
-                anchor.get('endOffset'),
-                anchor.get('selectedText')
-            )
-        )
-        conn.commit()
+        thread['anchor'] = {
+            'startLine': anchor.get('startLine', 1),
+            'endLine': anchor.get('endLine', 1),
+            'startOffset': anchor.get('startOffset'),
+            'endOffset': anchor.get('endOffset'),
+            'selectedText': anchor.get('selectedText'),
+        }
 
-    return jsonify({'id': thread_id, 'documentId': doc_id, 'changeSetId': cs_id, 'createdBy': uid, 'createdAt': now}), 201
+    store['threads'].append(thread)
+    save_comment_store(context['filePath'], context['commitSha'], store)
+    return jsonify({
+        'id': thread_id,
+        'documentId': context['documentId'],
+        'filePath': context['filePath'],
+        'commitSha': context['commitSha'],
+        'createdBy': uid,
+        'createdAt': now
+    }), 201
 
 @review_bp.route('/comment-lines', methods=['POST'])
 @require_auth
@@ -187,28 +242,22 @@ def add_comment():
     data = request.get_json()
     if not data or 'threadId' not in data or 'body' not in data:
         return jsonify({'error': 'threadId and body required'}), 400
-
-    if not user_owns_thread(data['threadId'], uid):
-        return jsonify({'error': 'Not found'}), 404
-    thread_row = get_db().execute(
-        "SELECT document_id FROM comment_threads WHERE id = ?",
-        (data['threadId'],)
-    ).fetchone()
-    if not thread_row:
-        return jsonify({'error': 'Not found'}), 404
-    access_error = require_document_access(thread_row['document_id'], uid)
-    if access_error:
-        return access_error
+    context, store, error = require_thread_edit_context(data['threadId'], uid, data)
+    if error:
+        return error
 
     comment_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
-
-    conn = get_db()
-    conn.execute(
-        "INSERT INTO comments (id, thread_id, user_id, body, created_at) VALUES (?, ?, ?, ?, ?)",
-        (comment_id, data['threadId'], uid, data['body'], now)
-    )
-    conn.commit()
+    thread = next(t for t in store['threads'] if t['id'] == data['threadId'])
+    thread.setdefault('comments', []).append({
+        'id': comment_id,
+        'threadId': data['threadId'],
+        'userId': uid,
+        'body': data['body'],
+        'createdAt': now,
+        'username': session.get('username', ''),
+    })
+    save_comment_store(context['filePath'], context['commitSha'], store)
     return jsonify({'id': comment_id, 'threadId': data['threadId'], 'userId': uid, 'body': data['body'], 'createdAt': now}), 201
 
 @review_bp.route('/documents/<doc_id>/threads', methods=['GET'])
@@ -217,83 +266,43 @@ def list_threads(doc_id):
     ownership_error = require_document_access(doc_id, session['user_id'])
     if ownership_error:
         return ownership_error
-    conn = get_db()
-    rows = conn.execute(
-        "SELECT ct.* FROM comment_threads ct WHERE ct.document_id = ? AND ct.change_set_id IS NULL ORDER BY ct.created_at DESC",
-        (doc_id,)
-    ).fetchall()
-    all_threads = []
-    for r in rows:
-        raw = dict(r)
-        thread = {
-            'id': raw['id'],
-            'documentId': raw['document_id'],
-            'changeSetId': raw['change_set_id'],
-            'createdBy': raw['created_by'],
-            'createdAt': raw['created_at'],
-            'resolved': raw.get('resolved', 0),
-            'resolvedBy': raw.get('resolved_by'),
-            'resolvedAt': raw.get('resolved_at'),
-        }
-        comments = conn.execute(
-            "SELECT c.*, u.username FROM comments c JOIN users u ON c.user_id = u.id WHERE c.thread_id = ? ORDER BY c.created_at ASC",
-            (thread['id'],)
-        ).fetchall()
-        thread['comments'] = [
-            {
-                'id': dict(c)['id'],
-                'threadId': dict(c)['thread_id'],
-                'userId': dict(c)['user_id'],
-                'body': dict(c)['body'],
-                'createdAt': dict(c)['created_at'],
-                'username': dict(c)['username'],
-            }
-            for c in comments
-        ]
-        anchor_row = conn.execute("SELECT * FROM comment_anchors WHERE thread_id = ?", (thread['id'],)).fetchone()
-        if anchor_row:
-            a = dict(anchor_row)
-            thread['anchor'] = {
-                'startLine': a['start_line'],
-                'endLine': a['end_line'],
-                'startOffset': a.get('start_offset'),
-                'endOffset': a.get('end_offset'),
-                'selectedText': a.get('selected_text'),
-            }
-        else:
-            thread['anchor'] = None
-        u = conn.execute("SELECT username FROM users WHERE id = ?", (thread['createdBy'],)).fetchone()
-        thread['createdByUsername'] = u['username'] if u else ''
-        all_threads.append(thread)
-    return jsonify(all_threads)
+    commit_sha = request.args.get('commitSha')
+    file_path = request.args.get('filePath')
+    if not commit_sha or not file_path:
+        return jsonify([])
+    try:
+        store = load_comment_store(file_path, commit_sha)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    threads = [
+        serialize_thread(thread)
+        for thread in sorted(store.get('threads', []), key=lambda item: item.get('createdAt', ''), reverse=True)
+        if thread.get('documentId') == doc_id and not thread.get('changeSetId')
+    ]
+    return jsonify(threads)
 
 @review_bp.route('/comments/threads/<thread_id>/resolve', methods=['POST'])
 @require_auth
 def toggle_resolve(thread_id):
     uid = session['user_id']
-    if not user_owns_thread(thread_id, uid):
-        return jsonify({'error': 'Not found'}), 404
-    conn = get_db()
-    row = conn.execute("SELECT id, document_id FROM comment_threads WHERE id = ?", (thread_id,)).fetchone()
-    if not row:
-        return jsonify({'error': 'Not found'}), 404
-    edit_error = require_document_edit(row['document_id'], uid)
+    data = request.get_json() or {}
+    context, store, error = require_thread_edit_context(thread_id, uid, data)
+    if error:
+        return error
+    edit_error = require_document_edit(context['documentId'], uid)
     if edit_error:
         return edit_error
 
     now = datetime.now(timezone.utc).isoformat()
-    try:
-        current = conn.execute("SELECT resolved FROM comment_threads WHERE id = ?", (thread_id,)).fetchone()
-        new_resolved = 0 if (current and current['resolved']) else 1
-    except:
-        new_resolved = 1
-
-    resolved_by = uid if new_resolved else None
-    resolved_at = now if new_resolved else None
-
-    conn.execute(
-        "UPDATE comment_threads SET resolved = ?, resolved_by = ?, resolved_at = ? WHERE id = ?",
-        (new_resolved, resolved_by, resolved_at, thread_id)
-    )
-    conn.commit()
-    return jsonify({'id': thread_id, 'resolved': bool(new_resolved), 'resolvedBy': resolved_by, 'resolvedAt': resolved_at})
+    thread = next(t for t in store['threads'] if t['id'] == thread_id)
+    new_resolved = not bool(thread.get('resolved'))
+    thread['resolved'] = new_resolved
+    thread['resolvedBy'] = uid if new_resolved else None
+    thread['resolvedAt'] = now if new_resolved else None
+    save_comment_store(context['filePath'], context['commitSha'], store)
+    return jsonify({
+        'id': thread_id,
+        'resolved': bool(new_resolved),
+        'resolvedBy': thread['resolvedBy'],
+        'resolvedAt': thread['resolvedAt']
+    })

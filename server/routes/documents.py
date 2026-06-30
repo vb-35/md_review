@@ -5,6 +5,7 @@ from flask import Blueprint, request, jsonify, session
 from models import get_db, get_document_for_user
 from utils.renderer import markdown_to_html
 from utils.diff import compute_diff
+from utils.repo_storage import default_repo_path, get_head_commit, read_repo_file, write_repo_file
 
 doc_bp = Blueprint('documents', __name__)
 SHARE_ROLES = {'viewer', 'editor'}
@@ -19,10 +20,15 @@ def require_auth(f):
     return decorated
 
 def document_to_api(doc):
+    markdown = doc.get('markdown')
+    repo_path = ensure_document_repo_path(doc)
+    markdown = read_repo_file(repo_path, markdown or '')
     return {
         'id': doc['id'],
         'title': doc['title'],
-        'markdown': doc.get('markdown'),
+        'repoPath': repo_path,
+        'currentCommitSha': get_head_commit(),
+        'markdown': markdown,
         'ownerId': doc['owner_id'],
         'ownerUsername': doc.get('owner_username'),
         'updatedBy': doc['updated_by'],
@@ -51,6 +57,19 @@ def require_owner_access(doc):
     if not doc['is_owner']:
         return jsonify({'error': 'Forbidden'}), 403
     return None
+
+
+def ensure_document_repo_path(doc):
+    repo_path = doc.get('repo_path')
+    if repo_path:
+        return repo_path
+    repo_path = default_repo_path(doc['id'], doc['title'])
+    write_repo_file(repo_path, doc.get('markdown', ''))
+    conn = get_db()
+    conn.execute("UPDATE documents SET repo_path = ? WHERE id = ?", (repo_path, doc['id']))
+    conn.commit()
+    doc['repo_path'] = repo_path
+    return repo_path
 
 @doc_bp.route('/documents', methods=['GET'])
 @require_auth
@@ -101,15 +120,18 @@ def create_document():
     uid = session['user_id']
     now = datetime.now(timezone.utc).isoformat()
     md = data.get('markdown', '')
+    repo_path = data.get('repoPath')
     html_cache = markdown_to_html(md)
 
     conn = get_db()
     username_row = conn.execute("SELECT username FROM users WHERE id = ?", (uid,)).fetchone()
     username_val = username_row['username'] if username_row else uid
+    repo_path = repo_path or default_repo_path(doc_id, data['title'])
+    write_repo_file(repo_path, md)
 
     conn.execute(
-        "INSERT INTO documents (id, title, markdown, html_cache, owner_id, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        (doc_id, data['title'], md, html_cache, uid, uid, now)
+        "INSERT INTO documents (id, title, repo_path, markdown, html_cache, owner_id, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (doc_id, data['title'], repo_path, md, html_cache, uid, uid, now)
     )
 
     version_id = str(uuid.uuid4())
@@ -146,21 +168,24 @@ def update_document(doc_id):
     if permission_error:
         return permission_error
 
-    md = data.get('markdown', row['markdown'])
+    repo_path = ensure_document_repo_path(row)
+    old_md = read_repo_file(repo_path, row.get('markdown', ''))
+    md = data.get('markdown', old_md)
     title = data.get('title', row['title'])
     html_cache = markdown_to_html(md)
     now = datetime.now(timezone.utc).isoformat()
 
-    old_md = row['markdown']
     diff_rows = compute_diff(old_md, md)
     version = conn.execute(
         "SELECT COALESCE(MAX(version), 0) + 1 FROM document_versions WHERE document_id = ?",
         (doc_id,)
     ).fetchone()[0]
 
+    write_repo_file(repo_path, md)
+
     conn.execute(
-        "UPDATE documents SET title = ?, markdown = ?, html_cache = ?, updated_by = ?, updated_at = ? WHERE id = ?",
-        (title, md, html_cache, uid, now, doc_id)
+        "UPDATE documents SET title = ?, repo_path = ?, markdown = ?, html_cache = ?, updated_by = ?, updated_at = ? WHERE id = ?",
+        (title, repo_path, md, html_cache, uid, now, doc_id)
     )
 
     version_id = str(uuid.uuid4())

@@ -134,6 +134,15 @@ function canManageShares() {
   return !!currentDoc && currentDoc.isOwner;
 }
 
+function currentCommentContext() {
+  if (!currentDoc || !currentDoc.currentCommitSha || !currentDoc.repoPath) return null;
+  return {
+    documentId: currentDoc.id,
+    commitSha: currentDoc.currentCommitSha,
+    filePath: currentDoc.repoPath
+  };
+}
+
 function holdsCurrentLock() {
   return !!currentDoc && currentDoc.lockOwnerId === currentUser.id;
 }
@@ -1122,8 +1131,10 @@ function showCommentPrompt(range, anchor) {
     const offsets = getSourceOffsetsFromPreviewSelection(anchor.startLine, anchor.endLine, selectedText);
 
     try {
+      const context = currentCommentContext();
+      if (!context) throw new Error('Missing comment context for current file version');
       await api('POST', '/comments/threads', {
-        documentId: currentDoc.id,
+        ...context,
         body: body.trim(),
         anchor: {
           startLine: anchor.startLine,
@@ -1284,7 +1295,17 @@ function renderDiff(lines) {
 
 async function loadThreads() {
   if (!currentDoc) return;
-  threads = await api('GET', `/documents/${currentDoc.id}/threads`);
+  const context = currentCommentContext();
+  if (!context) {
+    threads = [];
+    renderThreads();
+    return;
+  }
+  const query = new URLSearchParams({
+    commitSha: context.commitSha,
+    filePath: context.filePath
+  });
+  threads = await api('GET', `/documents/${currentDoc.id}/threads?${query.toString()}`);
   renderThreads();
 }
 
@@ -1342,7 +1363,13 @@ function renderThreads() {
     replyBtn.addEventListener('click', async () => {
       if (!replyInput.value.trim()) return;
       try {
-        await api('POST', '/comment-lines', { threadId: thread.id, body: replyInput.value.trim() });
+        const context = currentCommentContext();
+        if (!context) throw new Error('Missing comment context for current file version');
+        await api('POST', '/comment-lines', {
+          ...context,
+          threadId: thread.id,
+          body: replyInput.value.trim()
+        });
         await loadThreads();
       } catch (e) {
         alert(e.message);
@@ -1361,7 +1388,9 @@ function renderThreads() {
       e.stopPropagation();
       if (!canResolve) return;
       try {
-        await api('POST', `/comments/threads/${thread.id}/resolve`);
+        const context = currentCommentContext();
+        if (!context) throw new Error('Missing comment context for current file version');
+        await api('POST', `/comments/threads/${thread.id}/resolve`, context);
         await loadThreads();
         updateCommentMarkers();
       } catch (err) {
@@ -1565,8 +1594,10 @@ $('#btn-add-thread').addEventListener('click', async () => {
     : startLine;
 
   try {
+    const context = currentCommentContext();
+    if (!context) throw new Error('Missing comment context for current file version');
     await api('POST', '/comments/threads', {
-      documentId: currentDoc.id,
+      ...context,
       body,
       anchor: { startLine, endLine, startOffset, endOffset, selectedText }
     });

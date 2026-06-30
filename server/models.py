@@ -39,6 +39,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS documents (
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL,
+        repo_path TEXT,
         markdown TEXT NOT NULL DEFAULT '',
         html_cache TEXT,
         owner_id TEXT NOT NULL,
@@ -140,6 +141,11 @@ def init_db():
         pass
     try:
         conn.execute("ALTER TABLE comment_anchors ADD COLUMN selected_text TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    try:
+        conn.execute("ALTER TABLE documents ADD COLUMN repo_path TEXT")
         conn.commit()
     except sqlite3.OperationalError:
         pass

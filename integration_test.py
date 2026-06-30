@@ -3,6 +3,7 @@
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -15,6 +16,15 @@ from utils.login_tokens import issue_login_token
 
 
 TMP_DIR = tempfile.mkdtemp(prefix='md_review_test_')
+REPO_DIR = os.path.join(TMP_DIR, 'repo')
+os.makedirs(REPO_DIR, exist_ok=True)
+subprocess.run(['git', '-C', REPO_DIR, 'init'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+subprocess.run(['git', '-C', REPO_DIR, 'config', 'user.name', 'Test User'], check=True)
+subprocess.run(['git', '-C', REPO_DIR, 'config', 'user.email', 'test@example.com'], check=True)
+with open(os.path.join(REPO_DIR, '.gitignore'), 'w', encoding='utf-8') as handle:
+    handle.write('\n')
+subprocess.run(['git', '-C', REPO_DIR, 'add', '.gitignore'], check=True)
+subprocess.run(['git', '-C', REPO_DIR, 'commit', '-m', 'init'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 Config.DATABASE = os.path.join(TMP_DIR, 'test_quick.db')
 Config.SESSION_FILE_DIR = os.path.join(TMP_DIR, 'sessions')
 Config.SECRET_KEY = 'test-secret'
@@ -22,6 +32,7 @@ Config.AUTH_MODE = 'pam'
 Config.LOCAL_AUTH = 'on'
 Config.TRUSTED_USER_HEADER = 'X-Remote-User'
 Config.TRUSTED_USER_LOCAL_ONLY = True
+Config.REPO_ROOT = REPO_DIR
 
 os.makedirs(Config.SESSION_FILE_DIR, exist_ok=True)
 init_db()
@@ -32,6 +43,7 @@ editor_client = app.test_client()
 other_client = app.test_client()
 doc_id = None
 version_ids = []
+doc_context = None
 
 
 def cleanup():
@@ -69,8 +81,14 @@ try:
     assert r.status_code == 201
     doc = r.get_json()
     doc_id = doc['id']
+    doc_context = {
+        'documentId': doc_id,
+        'filePath': doc['repoPath'],
+        'commitSha': doc['currentCommitSha']
+    }
     assert doc['accessRole'] == 'owner'
     assert doc['isOwner'] is True
+    assert doc['repoPath']
     print("PASS: create_doc")
 
     r = client.get(f'/api/documents/{doc_id}')
@@ -169,18 +187,23 @@ try:
     assert r.status_code == 403
     print("PASS: viewer_write_access_blocked")
 
-    r = viewer_client.post('/api/comments/threads', json={'documentId': doc_id, 'body': 'Viewer note'})
+    r = viewer_client.post('/api/comments/threads', json={**doc_context, 'body': 'Viewer note'})
     assert r.status_code == 201
     viewer_thread_id = r.get_json()['id']
-    r = viewer_client.post('/api/comment-lines', json={'threadId': viewer_thread_id, 'body': 'Viewer reply'})
+    r = viewer_client.post('/api/comment-lines', json={**doc_context, 'threadId': viewer_thread_id, 'body': 'Viewer reply'})
     assert r.status_code == 201
-    r = viewer_client.post(f'/api/comments/threads/{viewer_thread_id}/resolve')
+    r = viewer_client.post(f'/api/comments/threads/{viewer_thread_id}/resolve', json=doc_context)
     assert r.status_code == 403
     print("PASS: viewer_can_comment_but_not_resolve")
 
     r = editor_client.get(f'/api/documents/{doc_id}')
     assert r.status_code == 200
     assert r.get_json()['accessRole'] == 'editor'
+    doc_context = {
+        'documentId': doc_id,
+        'filePath': r.get_json()['repoPath'],
+        'commitSha': r.get_json()['currentCommitSha']
+    }
     print("PASS: editor_get_doc")
 
     r = editor_client.post(f'/api/documents/{doc_id}/lock')
@@ -194,7 +217,7 @@ try:
     print("PASS: editor_update_doc")
 
     r = editor_client.post('/api/comments/threads', json={
-        'documentId': doc_id,
+        **doc_context,
         'anchor': {
             'startLine': 1,
             'endLine': 1,
@@ -205,7 +228,9 @@ try:
     })
     assert r.status_code == 201
     tid = r.get_json()['id']
-    listed = editor_client.get(f'/api/documents/{doc_id}/threads')
+    listed = editor_client.get(
+        f"/api/documents/{doc_id}/threads?commitSha={doc_context['commitSha']}&filePath={doc_context['filePath']}"
+    )
     assert listed.status_code == 200
     anchor = next(t['anchor'] for t in listed.get_json() if t['id'] == tid)
     assert anchor['startLine'] == 1
@@ -213,10 +238,23 @@ try:
     assert anchor['startOffset'] == 2
     assert anchor['endOffset'] == 8
     assert anchor['selectedText'] == 'Editor'
-    r2 = editor_client.post('/api/comment-lines', json={'threadId': tid, 'body': 'Great work'})
+    r2 = editor_client.post('/api/comment-lines', json={**doc_context, 'threadId': tid, 'body': 'Great work'})
     assert r2.status_code == 201
-    r3 = editor_client.post(f'/api/comments/threads/{tid}/resolve')
+    r3 = editor_client.post(f'/api/comments/threads/{tid}/resolve', json=doc_context)
     assert r3.status_code == 200
+    comment_file = os.path.join(REPO_DIR, '.md-review', 'comments', *doc_context['filePath'].split('/'), f"{doc_context['commitSha']}.json")
+    assert os.path.exists(comment_file)
+    with open(comment_file, 'r', encoding='utf-8') as handle:
+        stored_comments = json.load(handle)
+    stored_thread = next(t for t in stored_comments['threads'] if t['id'] == tid)
+    assert stored_thread['resolved'] is True
+    assert len(stored_thread['comments']) == 1
+    assert stored_thread['anchor']['selectedText'] == 'Editor'
+    empty_listing = editor_client.get(
+        f"/api/documents/{doc_id}/threads?commitSha={'0' * 40}&filePath={doc_context['filePath']}"
+    )
+    assert empty_listing.status_code == 200
+    assert empty_listing.get_json() == []
     print("PASS: editor_comments_and_resolve")
 
     r = editor_client.post(f'/api/versions/{version_ids[1]}/revert')
