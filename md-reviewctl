@@ -4,9 +4,12 @@ import getpass
 import io
 import os
 import pwd
+import secrets
 import shutil
+import socket
 import subprocess
 import sys
+import time
 from contextlib import redirect_stdout
 from urllib.parse import quote
 
@@ -18,7 +21,7 @@ def resolve_root():
 
     script_dir = os.path.abspath(os.path.dirname(__file__))
     for candidate in (script_dir, os.getcwd()):
-        if os.path.exists(os.path.join(candidate, 'server', 'run.py')) and os.path.exists(os.path.join(candidate, 'deploy')):
+        if os.path.exists(os.path.join(candidate, 'server', 'run.py')):
             return candidate
     raise SystemExit('Set MD_REVIEW_ROOT to the project root')
 
@@ -67,21 +70,57 @@ def port():
     return env_flag('PORT', '18080')
 
 
+def host():
+    return env_flag('HOST', '0.0.0.0')
+
+
 def app_base_path():
     return env_flag('APP_BASE_PATH', '')
+
+
+def venv_dir():
+    return env_flag('VENV_DIR', os.path.join(root_dir(), '.venv'))
 
 
 def secret_file():
     return env_flag('SECRET_FILE', os.path.join(data_dir(), 'secret_key'))
 
 
-def ensure_secret():
+def database_path():
+    return env_flag('DATABASE_PATH', os.path.join(data_dir(), 'md_review.db'))
+
+
+def session_file_dir():
+    return env_flag('SESSION_FILE_DIR', os.path.join(data_dir(), 'flask_session'))
+
+
+def workers():
+    return env_flag('WORKERS', '2')
+
+
+def threads():
+    return env_flag('THREADS', '4')
+
+
+def token_login_max_age():
+    return env_flag('TOKEN_LOGIN_MAX_AGE_SECONDS', '120')
+
+
+def ensure_secret_file():
+    secret_path = secret_file()
+    if not os.path.exists(secret_path):
+        os.makedirs(os.path.dirname(secret_path), exist_ok=True)
+        with open(secret_path, 'w', encoding='utf-8') as handle:
+            handle.write(secrets.token_urlsafe(48))
+        os.chmod(secret_path, 0o600)
+    return secret_path
+
+
+def read_secret():
     token_secret = os.environ.get('TOKEN_LOGIN_SECRET', '').strip()
     if token_secret:
         return token_secret
-    secret_path = secret_file()
-    if not os.path.exists(secret_path):
-        raise SystemExit(f'Missing secret file: {secret_path}')
+    secret_path = ensure_secret_file()
     with open(secret_path, encoding='utf-8') as handle:
         return handle.read().strip()
 
@@ -93,6 +132,92 @@ def url_path():
     return f"{base_path.rstrip('/')}/"
 
 
+def server_ip():
+    try:
+        output = subprocess.check_output(['hostname', '-I'], text=True).strip()
+        if output:
+            return output.split()[0]
+    except Exception:
+        pass
+    return '127.0.0.1'
+
+
+def tunnel_host():
+    try:
+        return subprocess.check_output(['hostname', '-f'], text=True).strip()
+    except Exception:
+        return socket.gethostname()
+
+
+def process_is_running(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def read_pid():
+    pid_path = pid_file()
+    if not os.path.exists(pid_path):
+        return None
+    with open(pid_path, encoding='utf-8') as handle:
+        raw = handle.read().strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
+
+
+def port_is_in_use():
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        sock.bind((host(), int(port())))
+    except OSError:
+        return True
+    finally:
+        sock.close()
+    return False
+
+
+def ensure_venv():
+    if not os.path.isdir(venv_dir()):
+        subprocess.run([sys.executable, '-m', 'venv', venv_dir()], check=True)
+    subprocess.run([os.path.join(venv_dir(), 'bin', 'pip'), 'install', '--upgrade', 'pip'], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run([os.path.join(venv_dir(), 'bin', 'pip'), 'install', '-r', os.path.join(root_dir(), 'server', 'requirements.txt')], check=True)
+
+
+def runtime_env():
+    secret = os.environ.get('SECRET_KEY', '').strip() or read_secret()
+    token_secret = os.environ.get('TOKEN_LOGIN_SECRET', '').strip() or secret
+    env = os.environ.copy()
+    env.update({
+        'SECRET_KEY': secret,
+        'DATABASE_PATH': database_path(),
+        'SESSION_FILE_DIR': session_file_dir(),
+        'AUTH_MODE': env_flag('AUTH_MODE', 'trusted_user'),
+        'TRUSTED_USER_HEADER': env_flag('TRUSTED_USER_HEADER', 'X-Remote-User'),
+        'TRUSTED_USER_LOCAL_ONLY': env_flag('TRUSTED_USER_LOCAL_ONLY', 'on'),
+        'TOKEN_LOGIN_SECRET': token_secret,
+        'TOKEN_LOGIN_MAX_AGE_SECONDS': token_login_max_age(),
+        'LOCAL_AUTH': env_flag('LOCAL_AUTH', 'off'),
+        'PAM_SERVICE': env_flag('PAM_SERVICE', 'login'),
+        'APP_BASE_PATH': app_base_path(),
+    })
+    return env
+
+
+def print_running_info(pid):
+    print(f'md_review is running with PID {pid}')
+    print(f'Web app: http://{server_ip()}:{port()}{url_path()}')
+    print(f'SSH tunnel: ssh -L {port()}:127.0.0.1:{port()} {current_username()}@{tunnel_host()}')
+    print(f'Browser via tunnel: http://127.0.0.1:{port()}{url_path()}')
+    cmd_login_url(type('Args', (), {'username': None})())
+    print(f'Logs: {log_file()}')
+
+
 def cmd_token(args):
     username = args.username or current_username()
     if args.username and username != current_username() and not is_root():
@@ -101,47 +226,74 @@ def cmd_token(args):
         validate_local_user(username)
     except KeyError:
         raise SystemExit(f'Unknown local user: {username}')
-    os.environ.setdefault('TOKEN_LOGIN_SECRET', ensure_secret())
+    os.environ.setdefault('TOKEN_LOGIN_SECRET', read_secret())
     issue_login_token = load_token_issuer(root_dir())
     print(issue_login_token(username))
 
 
 def cmd_start(args):
-    raise SystemExit(subprocess.call([os.path.join(root_dir(), 'deploy', 'deploy.sh')], cwd=root_dir()))
+    os.makedirs(data_dir(), exist_ok=True)
+    os.makedirs(session_file_dir(), exist_ok=True)
+    ensure_venv()
+
+    pid = read_pid()
+    if pid and process_is_running(pid):
+        print_running_info(pid)
+        return
+    if pid is not None:
+        try:
+            os.remove(pid_file())
+        except FileNotFoundError:
+            pass
+
+    if port_is_in_use():
+        raise SystemExit(f'Port {port()} is already in use. Pick another one with PORT=...')
+
+    env = runtime_env()
+    gunicorn = os.path.join(venv_dir(), 'bin', 'gunicorn')
+    subprocess.run([
+        gunicorn,
+        '--chdir', os.path.join(root_dir(), 'server'),
+        '--bind', f'{host()}:{port()}',
+        '--workers', workers(),
+        '--threads', threads(),
+        '--pid', pid_file(),
+        '--access-logfile', log_file(),
+        '--error-logfile', log_file(),
+        '--capture-output',
+        '--daemon',
+        'run:create_app()',
+    ], check=True, cwd=os.path.join(root_dir(), 'server'), env=env)
+
+    time.sleep(2)
+    pid = read_pid()
+    if not pid or not process_is_running(pid):
+        raise SystemExit(f'Failed to start md_review. Check {log_file()}')
+    print_running_info(pid)
 
 
 def cmd_stop(args):
-    pid_path = pid_file()
-    if not os.path.exists(pid_path):
+    pid = read_pid()
+    if not pid:
         print('md_review is not running')
         return
-    with open(pid_path, encoding='utf-8') as handle:
-        pid = handle.read().strip()
-    if pid:
-        try:
-            os.kill(int(pid), 0)
-            os.kill(int(pid), 15)
-            print(f'Stopped md_review (PID {pid})')
-        except ProcessLookupError:
-            print('Stale PID file removed')
-    else:
+    try:
+        os.kill(pid, 15)
+        print(f'Stopped md_review (PID {pid})')
+    except ProcessLookupError:
         print('Stale PID file removed')
     try:
-        os.remove(pid_path)
+        os.remove(pid_file())
     except FileNotFoundError:
         pass
 
 
 def cmd_status(args):
-    pid_path = pid_file()
-    if not os.path.exists(pid_path):
-        raise SystemExit('md_review is not running')
-    with open(pid_path, encoding='utf-8') as handle:
-        pid = handle.read().strip()
+    pid = read_pid()
     if not pid:
-        raise SystemExit('md_review pid file exists but process is not running')
+        raise SystemExit('md_review is not running')
     try:
-        os.kill(int(pid), 0)
+        os.kill(pid, 0)
     except ProcessLookupError:
         raise SystemExit('md_review pid file exists but process is not running')
     print('md_review is running')

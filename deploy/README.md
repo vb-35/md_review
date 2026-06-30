@@ -1,6 +1,6 @@
 ## Server Usage
 
-This app runs directly with `gunicorn`. Use the scripts in `deploy/` to start it, check status, and stop it.
+This app runs directly with `gunicorn`. Use `md-reviewctl` to start it, check status, and stop it.
 
 ## Operator Contract
 
@@ -67,5 +67,4 @@ curl -s http://127.0.0.1:18080/api/auth/me
 - The default port is `18080`.
 - Logs are written to `data/server.log`.
 - The signed login URL is the intended way to carry the current SSH user into the browser session.
-- `deploy/deploy.sh` also prints the login URL when the server is already running.
 - If `md-reviewctl` is installed outside the repo, set `MD_REVIEW_ROOT` to the project root or install it as a symlink.
