@@ -26,6 +26,14 @@ let previewTimer = null;
 let mathPlaceholders = {};
 let placeholderCounter = 0;
 
+function getLineNumberAtOffset(text, offset) {
+  let lineNumber = 1;
+  for (let i = 0; i < offset && i < text.length; i += 1) {
+    if (text[i] === '\n') lineNumber += 1;
+  }
+  return lineNumber;
+}
+
 const $ = (sel) => document.querySelector(sel);
 
 function headers() {
@@ -502,18 +510,27 @@ async function unlockDoc() {
 }
 
 function preprocessMath(md) {
+  const source = md;
   mathPlaceholders = {};
   placeholderCounter = 0;
 
-  md = md.replace(/\$\$([\s\S]+?)\$\$/g, (match, math) => {
+  md = md.replace(/\$\$([\s\S]+?)\$\$/g, (match, math, offset) => {
     const key = `{MATHB:${placeholderCounter++}}`;
-    mathPlaceholders[key] = { type: 'block', math: math.trim() };
+    mathPlaceholders[key] = {
+      type: 'block',
+      math: math.trim(),
+      line: getLineNumberAtOffset(source, offset)
+    };
     return `\n\n${key}\n\n`;
   });
 
-  md = md.replace(/\$([^\$\n]+?)\$/g, (match, math) => {
+  md = md.replace(/\$([^\$\n]+?)\$/g, (match, math, offset) => {
     const key = `{MATHI:${placeholderCounter++}}`;
-    mathPlaceholders[key] = { type: 'inline', math };
+    mathPlaceholders[key] = {
+      type: 'inline',
+      math,
+      line: getLineNumberAtOffset(source, offset)
+    };
     return ` ${key} `;
   });
 
@@ -538,7 +555,7 @@ function renderDiffSegments(line) {
 }
 
 function postprocessMath(html) {
-  for (const [key, { type, math }] of Object.entries(mathPlaceholders)) {
+  for (const [key, { type, math, line }] of Object.entries(mathPlaceholders)) {
     let rendered;
     try {
       rendered = katex.renderToString(math, {
@@ -548,9 +565,10 @@ function postprocessMath(html) {
     } catch {
       rendered = `<code>${escapeHtml(math)}</code>`;
     }
+    const lineAttr = line ? ` data-line="${line}"` : '';
     const wrapper = type === 'block'
-      ? `<div class="math-block">${rendered}</div>`
-      : `<span class="math-inline">${rendered}</span>`;
+      ? `<div class="math-block"${lineAttr}>${rendered}</div>`
+      : `<span class="math-inline"${lineAttr}>${rendered}</span>`;
     html = html.split(key).join(wrapper);
   }
   return html;
@@ -571,6 +589,10 @@ function annotateLines(container, source) {
 
   for (const el of blockEls) {
     if (processed.has(el)) continue;
+    if (el.hasAttribute('data-line')) {
+      processed.add(el);
+      continue;
+    }
     const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
     let tn;
     let lineNumber = null;
@@ -632,6 +654,19 @@ function getPreviewCaretAtPoint(event) {
   return null;
 }
 
+function getRenderedTextOffset(container, node, offset) {
+  if (!container || !node) return null;
+
+  try {
+    const range = document.createRange();
+    range.setStart(container, 0);
+    range.setEnd(node, offset);
+    return range.toString().length;
+  } catch {
+    return null;
+  }
+}
+
 function getTokenAtTextPosition(text, offset) {
   if (!text) return null;
 
@@ -654,11 +689,12 @@ function getTokenAtTextPosition(text, offset) {
 
   return {
     token: text.slice(start, end),
-    offsetInText: start
+    offsetInText: start,
+    offsetInToken: index - start
   };
 }
 
-function getBestTokenMatchOffset(lineText, token, preferredRatio) {
+function getBestTokenMatchOffset(lineText, token, preferredRatio, offsetInToken = 0) {
   if (!token) return null;
 
   const matches = [];
@@ -668,6 +704,48 @@ function getBestTokenMatchOffset(lineText, token, preferredRatio) {
     const after = index + token.length >= lineText.length ? '' : lineText[index + token.length];
     if (/[A-Za-z0-9_]/.test(before) || /[A-Za-z0-9_]/.test(after)) continue;
     matches.push(index);
+  }
+
+  if (!matches.length) return null;
+  if (matches.length === 1) return matches[0] + Math.min(offsetInToken, token.length);
+
+  const targetIndex = Math.max(0, Math.min(lineText.length, Math.round(lineText.length * preferredRatio)));
+  let best = matches[0];
+  let bestDistance = Math.abs(matches[0] - targetIndex);
+
+  for (const matchIndex of matches.slice(1)) {
+    const distance = Math.abs(matchIndex - targetIndex);
+    if (distance < bestDistance) {
+      best = matchIndex;
+      bestDistance = distance;
+    }
+  }
+
+  return best + Math.min(offsetInToken, token.length);
+}
+
+function getMathExpressionOffset(source, lineNumber, isBlockMath) {
+  const lineStart = getLineStartOffset(source, lineNumber);
+  const lineText = getLineTextAt(source, lineNumber);
+
+  if (isBlockMath) {
+    const blockIndex = lineText.indexOf('$$');
+    if (blockIndex !== -1) return lineStart + blockIndex;
+    return lineStart;
+  }
+
+  const inlineIndex = lineText.indexOf('$');
+  if (inlineIndex !== -1) return lineStart + inlineIndex;
+  return lineStart;
+}
+
+function getNearestInlineMathOffset(lineText, preferredRatio) {
+  const matches = [];
+  const regex = /\$([^\$\n]+?)\$/g;
+  let match;
+
+  while ((match = regex.exec(lineText)) !== null) {
+    matches.push(match.index);
   }
 
   if (!matches.length) return null;
@@ -717,9 +795,30 @@ function moveEditorCursorToPreviewClick(event) {
 
   const source = $('#editor').value || '';
   const lineStart = getLineStartOffset(source, lineNumber);
+  const mathBlock = event.target.closest('.math-block');
+  const mathInline = event.target.closest('.math-inline');
+  const renderedText = lineEl.textContent || '';
   let targetOffset = lineStart;
 
-  if (!event.target.closest('.math-block, .math-inline')) {
+  if (mathBlock) {
+    targetOffset = getMathExpressionOffset(source, lineNumber, true);
+  } else if (mathInline) {
+    const caret = getPreviewCaretAtPoint(event);
+    let preferredRatio = 0;
+
+    if (caret && caret.node && lineEl.contains(caret.node)) {
+      const offsetInRenderedText = getRenderedTextOffset(lineEl, caret.node, caret.offset);
+      if (offsetInRenderedText !== null && renderedText.length) {
+        preferredRatio = Math.max(0, Math.min(1, offsetInRenderedText / renderedText.length));
+      }
+    }
+
+    const lineText = getLineTextAt(source, lineNumber);
+    const inlineMathOffset = getNearestInlineMathOffset(lineText, preferredRatio);
+    targetOffset = inlineMathOffset !== null
+      ? lineStart + inlineMathOffset
+      : getMathExpressionOffset(source, lineNumber, false);
+  } else {
     const caret = getPreviewCaretAtPoint(event);
     const caretNode = caret && caret.node && lineEl.contains(caret.node) ? caret.node : null;
     const textNode = caretNode && caretNode.nodeType === Node.TEXT_NODE ? caretNode : null;
@@ -728,11 +827,16 @@ function moveEditorCursorToPreviewClick(event) {
       const tokenInfo = getTokenAtTextPosition(textNode.textContent || '', caret.offset);
       if (tokenInfo && tokenInfo.token) {
         const lineText = getLineTextAt(source, lineNumber);
-        const renderedText = lineEl.textContent || '';
-        const preferredRatio = renderedText.length
-          ? Math.max(0, Math.min(1, tokenInfo.offsetInText / renderedText.length))
+        const offsetInRenderedText = getRenderedTextOffset(lineEl, textNode, caret.offset);
+        const preferredRatio = renderedText.length && offsetInRenderedText !== null
+          ? Math.max(0, Math.min(1, offsetInRenderedText / renderedText.length))
           : 0;
-        const matchOffset = getBestTokenMatchOffset(lineText, tokenInfo.token, preferredRatio);
+        const matchOffset = getBestTokenMatchOffset(
+          lineText,
+          tokenInfo.token,
+          preferredRatio,
+          tokenInfo.offsetInToken
+        );
         if (matchOffset !== null) {
           targetOffset = lineStart + matchOffset;
         }
