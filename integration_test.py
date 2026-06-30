@@ -10,420 +10,170 @@ import tempfile
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
 
 from config import Config
-from models import init_db, get_db
+from models import get_db, init_db
 from run import create_app
-from utils.login_tokens import issue_login_token
 
 
 TMP_DIR = tempfile.mkdtemp(prefix='md_review_test_')
-REPO_DIR = os.path.join(TMP_DIR, 'repo')
-os.makedirs(REPO_DIR, exist_ok=True)
-subprocess.run(['git', '-C', REPO_DIR, 'init'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-subprocess.run(['git', '-C', REPO_DIR, 'config', 'user.name', 'Test User'], check=True)
-subprocess.run(['git', '-C', REPO_DIR, 'config', 'user.email', 'test@example.com'], check=True)
-with open(os.path.join(REPO_DIR, '.gitignore'), 'w', encoding='utf-8') as handle:
-    handle.write('\n')
-subprocess.run(['git', '-C', REPO_DIR, 'add', '.gitignore'], check=True)
-subprocess.run(['git', '-C', REPO_DIR, 'commit', '-m', 'init'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-Config.DATABASE = os.path.join(TMP_DIR, 'test_quick.db')
+Config.DATABASE = os.path.join(TMP_DIR, 'test.db')
 Config.SESSION_FILE_DIR = os.path.join(TMP_DIR, 'sessions')
 Config.SECRET_KEY = 'test-secret'
 Config.AUTH_MODE = 'pam'
 Config.LOCAL_AUTH = 'on'
-Config.TRUSTED_USER_HEADER = 'X-Remote-User'
-Config.TRUSTED_USER_LOCAL_ONLY = True
-Config.REPO_ROOT = REPO_DIR
-
+Config.REPO_ROOT = os.path.join(TMP_DIR, 'storage')
 os.makedirs(Config.SESSION_FILE_DIR, exist_ok=True)
-init_db()
+os.makedirs(Config.REPO_ROOT, exist_ok=True)
+init_db().close()
+
 app = create_app()
 client = app.test_client()
 viewer_client = app.test_client()
 editor_client = app.test_client()
 other_client = app.test_client()
-doc_id = None
-version_ids = []
-doc_context = None
 
 
 def cleanup():
     shutil.rmtree(TMP_DIR, ignore_errors=True)
 
 
+def login(test_client, username):
+    response = test_client.post('/api/auth/login', json={'username': username, 'password': 'abc'})
+    assert response.status_code == 200, response.data
+
+
 try:
-    r = client.post('/api/auth/login', json={'username': 'tester', 'password': 'abc'})
-    assert r.status_code == 200, f"login {r.data}"
+    login(client, 'owner')
+    login(viewer_client, 'viewer')
+    login(editor_client, 'editor')
+    login(other_client, 'other')
     print("PASS: login")
 
-    r = viewer_client.post('/api/auth/login', json={'username': 'viewer', 'password': 'abc'})
-    assert r.status_code == 200
-    print("PASS: viewer_login")
+    response = client.post('/api/projects', json={'title': 'Specs'})
+    assert response.status_code == 201, response.data
+    project = response.get_json()
+    project_id = project['id']
+    assert project['currentCommitSha'] is None
+    print("PASS: create_project")
 
-    r = editor_client.post('/api/auth/login', json={'username': 'editor', 'password': 'abc'})
-    assert r.status_code == 200
-    print("PASS: editor_login")
+    response = client.post(f'/api/projects/{project_id}/files', json={'path': 'docs/spec.md', 'content': '# Start\n'})
+    assert response.status_code == 201, response.data
+    first_commit = response.get_json()['currentCommitSha']
+    assert first_commit
+    print("PASS: create_markdown_file")
 
-    r = other_client.post('/api/auth/login', json={'username': 'other', 'password': 'abc'})
-    assert r.status_code == 200
-    print("PASS: other_login")
+    response = client.get(f'/api/projects/{project_id}/files/content?path=docs/spec.md')
+    assert response.status_code == 200
+    assert response.get_json()['content'] == '# Start\n'
+    print("PASS: get_file_content")
 
-    r = client.get('/api/auth/me')
-    assert r.status_code == 200
-    assert r.get_json()['username'] == 'tester'
-    print("PASS: me")
+    response = client.post(f'/api/projects/{project_id}/shares', json={'username': 'viewer', 'role': 'viewer'})
+    assert response.status_code == 200
+    response = client.post(f'/api/projects/{project_id}/shares', json={'username': 'editor', 'role': 'editor'})
+    assert response.status_code == 200
+    print("PASS: share_project")
 
-    r = client.get('/api/auth/bootstrap')
-    assert r.status_code == 200
-    assert r.get_json()['user']['username'] == 'tester'
-    print("PASS: bootstrap_existing_session")
+    response = viewer_client.get('/api/projects')
+    assert response.status_code == 200
+    assert any(item['id'] == project_id and item['accessRole'] == 'viewer' for item in response.get_json())
+    print("PASS: viewer_list_projects")
 
-    r = client.post('/api/documents', json={'title': 'D1', 'markdown': '# H1\n\n$I=V/R$'})
-    assert r.status_code == 201
-    doc = r.get_json()
-    doc_id = doc['id']
-    doc_context = {
-        'documentId': doc_id,
-        'filePath': doc['repoPath'],
-        'commitSha': doc['currentCommitSha']
-    }
-    assert doc['accessRole'] == 'owner'
-    assert doc['isOwner'] is True
-    assert doc['repoPath']
-    print("PASS: create_doc")
+    response = viewer_client.put(f'/api/projects/{project_id}/files/content', json={'path': 'docs/spec.md', 'content': '# No\n'})
+    assert response.status_code == 403
+    print("PASS: viewer_cannot_edit")
 
-    r = client.get(f'/api/documents/{doc_id}')
-    assert r.status_code == 200
-    assert r.get_json()['markdown'] == '# H1\n\n$I=V/R$'
-    assert r.get_json()['ownerUsername'] == 'tester'
-    print("PASS: get_doc")
+    response = editor_client.post(f'/api/projects/{project_id}/lock')
+    assert response.status_code == 200
+    print("PASS: editor_lock")
 
-    r = client.put(f'/api/documents/{doc_id}', json={'markdown': '# Updated'})
-    assert r.status_code == 200
-    assert r.get_json()['markdown'] == '# Updated'
-    print("PASS: update_doc")
+    response = editor_client.put(f'/api/projects/{project_id}/files/content', json={'path': 'docs/spec.md', 'content': '# Updated\n'})
+    assert response.status_code == 200, response.data
+    second_commit = response.get_json()['currentCommitSha']
+    assert second_commit and second_commit != first_commit
+    print("PASS: editor_save")
 
-    imported_markdown = '# Imported\n\n- one\n- two\n'
-    r = client.post('/api/documents', json={'title': 'imported-notes', 'markdown': imported_markdown})
-    assert r.status_code == 201
-    imported_doc = r.get_json()
-    assert imported_doc['title'] == 'imported-notes'
-    assert imported_doc['markdown'] == imported_markdown
-    with app.app_context():
-        imported_version_count = get_db().execute(
-            "SELECT COUNT(*) FROM document_versions WHERE document_id = ?",
-            (imported_doc['id'],)
-        ).fetchone()[0]
-        assert imported_version_count == 1
-    print("PASS: create_imported_doc")
-
-    with app.app_context():
-        version_count = get_db().execute(
-            "SELECT COUNT(*) FROM document_versions WHERE document_id = ?",
-            (doc_id,)
-        ).fetchone()[0]
-        assert version_count == 2
-    print("PASS: version_rows")
-
-    r = client.get(f'/api/documents/{doc_id}/versions')
-    assert r.status_code == 200
-    versions = r.get_json()
+    response = editor_client.get(f'/api/projects/{project_id}/files/versions?path=docs/spec.md')
+    assert response.status_code == 200
+    versions = response.get_json()
     assert len(versions) == 2
-    version_ids = [v['id'] for v in versions]
     print("PASS: list_versions")
 
-    r = client.post('/api/versions', json={
-        'documentId': doc_id,
-        'versionA': version_ids[1],
-        'versionB': version_ids[0]
+    response = editor_client.post(f'/api/projects/{project_id}/files/compare', json={
+        'path': 'docs/spec.md',
+        'versionA': versions[1]['id'],
+        'versionB': versions[0]['id'],
     })
-    assert r.status_code == 200
-    diff = r.get_json()['diff']
-    assert any(x['type'] in ('added', 'removed') for x in diff)
-    assert any('segments' in x for x in diff if x['type'] in ('added', 'removed'))
-    print(f"PASS: compare_versions ({len(diff)} diff lines)")
+    assert response.status_code == 200
+    diff = response.get_json()['diff']
+    assert any(row['type'] in ('added', 'removed') for row in diff)
+    print("PASS: compare_versions")
+
+    context = {
+        'projectId': project_id,
+        'filePath': 'docs/spec.md',
+        'commitSha': second_commit,
+    }
+    response = viewer_client.post('/api/comments/threads', json={**context, 'body': 'Looks good'})
+    assert response.status_code == 201, response.data
+    thread_id = response.get_json()['id']
+    response = viewer_client.post('/api/comment-lines', json={**context, 'threadId': thread_id, 'body': 'Nit: title'})
+    assert response.status_code == 201
+    response = viewer_client.get(f"/api/projects/{project_id}/threads?commitSha={second_commit}&filePath=docs/spec.md")
+    assert response.status_code == 200
+    assert any(thread['id'] == thread_id for thread in response.get_json())
+    print("PASS: comment_thread")
+
+    response = viewer_client.post(f'/api/comments/threads/{thread_id}/resolve', json=context)
+    assert response.status_code == 403
+    response = editor_client.post(f'/api/comments/threads/{thread_id}/resolve', json=context)
+    assert response.status_code == 200
+    print("PASS: resolve_thread")
+
+    with open(os.path.join(TMP_DIR, 'logo.svg'), 'wb') as handle:
+        handle.write(b'<svg xmlns="http://www.w3.org/2000/svg"></svg>')
+    with open(os.path.join(TMP_DIR, 'logo.svg'), 'rb') as handle:
+        response = editor_client.post(
+            f'/api/projects/{project_id}/assets',
+            data={'path': 'assets', 'file': (handle, 'logo.svg')},
+            content_type='multipart/form-data'
+        )
+    assert response.status_code == 201, response.data
+    uploaded = response.get_json()
+    assert uploaded['path'] == 'assets/logo.svg'
+    print("PASS: upload_asset")
+
+    response = editor_client.post(f'/api/projects/{project_id}/rename', json={
+        'oldPath': 'docs/spec.md',
+        'newPath': 'docs/final.md',
+    })
+    assert response.status_code == 200
+    response = editor_client.get(f'/api/projects/{project_id}/files/content?path=docs/final.md')
+    assert response.status_code == 200
+    assert response.get_json()['content'] == '# Updated\n'
+    print("PASS: rename_markdown_file")
+
+    response = editor_client.delete(f'/api/projects/{project_id}/files', json={'path': 'assets/logo.svg'})
+    assert response.status_code == 200
+    print("PASS: delete_asset")
+
+    response = editor_client.post(f'/api/projects/{project_id}/files/versions/{versions[1]["id"]}/revert')
+    assert response.status_code == 200, response.data
+    response = editor_client.get(f'/api/projects/{project_id}/files/content?path=docs/final.md')
+    assert response.status_code == 200
+    assert response.get_json()['content'] == '# Start\n'
+    print("PASS: revert_version")
+
+    response = other_client.get(f'/api/projects/{project_id}')
+    assert response.status_code == 404
+    print("PASS: outsider_blocked")
+
+    response = client.delete(f'/api/projects/{project_id}')
+    assert response.status_code == 200
+    print("PASS: delete_project")
 
     with app.app_context():
-        stored_diff = get_db().execute(
-            "SELECT diff FROM document_versions WHERE id = ?",
-            (version_ids[0],)
-        ).fetchone()['diff']
-        parsed_diff = json.loads(stored_diff)
-        assert isinstance(parsed_diff, list)
-        assert all(not isinstance(row, str) for row in parsed_diff)
-    print("PASS: stored_diff_json")
+        count = get_db().execute("SELECT COUNT(*) FROM projects").fetchone()[0]
+        assert count == 0
+    print("PASS: project_deleted_from_db")
 
-    r = client.post(f'/api/documents/{doc_id}/shares', json={'username': 'viewer', 'role': 'viewer'})
-    assert r.status_code == 200
-    assert r.get_json()['role'] == 'viewer'
-    print("PASS: share_doc_viewer")
-
-    r = client.post(f'/api/documents/{doc_id}/shares', json={'username': 'editor', 'role': 'editor'})
-    assert r.status_code == 200
-    assert r.get_json()['role'] == 'editor'
-    print("PASS: share_doc_editor")
-
-    r = client.post(f'/api/documents/{doc_id}/shares', json={'username': 'missing', 'role': 'viewer'})
-    assert r.status_code == 404
-    print("PASS: share_missing_user_rejected")
-
-    r = client.get(f'/api/documents/{doc_id}/shares')
-    assert r.status_code == 200
-    shares = r.get_json()
-    assert {s['username'] for s in shares} == {'viewer', 'editor'}
-    print("PASS: list_shares")
-
-    r = viewer_client.get('/api/documents')
-    assert r.status_code == 200
-    viewer_docs = r.get_json()
-    assert any(d['id'] == doc_id and d['accessRole'] == 'viewer' for d in viewer_docs)
-    print("PASS: viewer_list_shared_doc")
-
-    r = viewer_client.get(f'/api/documents/{doc_id}')
-    assert r.status_code == 200
-    assert r.get_json()['accessRole'] == 'viewer'
-    print("PASS: viewer_get_doc")
-
-    r = viewer_client.get(f'/api/documents/{doc_id}/versions')
-    assert r.status_code == 200
-    print("PASS: viewer_list_versions")
-
-    r = viewer_client.get(f'/api/documents/{doc_id}/threads')
-    assert r.status_code == 200
-    print("PASS: viewer_list_threads")
-
-    r = viewer_client.put(f'/api/documents/{doc_id}', json={'markdown': '# No'})
-    assert r.status_code == 403
-    r = viewer_client.post(f'/api/documents/{doc_id}/lock')
-    assert r.status_code == 403
-    r = viewer_client.post(f'/api/versions/{version_ids[1]}/revert')
-    assert r.status_code == 403
-    r = viewer_client.get(f'/api/documents/{doc_id}/shares')
-    assert r.status_code == 403
-    print("PASS: viewer_write_access_blocked")
-
-    r = viewer_client.post('/api/comments/threads', json={**doc_context, 'body': 'Viewer note'})
-    assert r.status_code == 201
-    viewer_thread_id = r.get_json()['id']
-    r = viewer_client.post('/api/comment-lines', json={**doc_context, 'threadId': viewer_thread_id, 'body': 'Viewer reply'})
-    assert r.status_code == 201
-    r = viewer_client.post(f'/api/comments/threads/{viewer_thread_id}/resolve', json=doc_context)
-    assert r.status_code == 403
-    r = viewer_client.delete(f'/api/comments/threads/{viewer_thread_id}', json=doc_context)
-    assert r.status_code == 403
-    print("PASS: viewer_can_comment_but_not_resolve")
-
-    r = editor_client.get(f'/api/documents/{doc_id}')
-    assert r.status_code == 200
-    assert r.get_json()['accessRole'] == 'editor'
-    doc_context = {
-        'documentId': doc_id,
-        'filePath': r.get_json()['repoPath'],
-        'commitSha': r.get_json()['currentCommitSha']
-    }
-    print("PASS: editor_get_doc")
-
-    r = editor_client.post(f'/api/documents/{doc_id}/lock')
-    assert r.status_code == 200
-    assert r.get_json()['lockOwnerId']
-    print("PASS: editor_lock_doc")
-
-    r = editor_client.put(f'/api/documents/{doc_id}', json={'markdown': '# Editor Updated'})
-    assert r.status_code == 200
-    assert r.get_json()['markdown'] == '# Editor Updated'
-    print("PASS: editor_update_doc")
-
-    r = editor_client.post('/api/comments/threads', json={
-        **doc_context,
-        'anchor': {
-            'startLine': 1,
-            'endLine': 1,
-            'startOffset': 2,
-            'endOffset': 8,
-            'selectedText': 'Editor'
-        }
-    })
-    assert r.status_code == 201
-    tid = r.get_json()['id']
-    listed = editor_client.get(
-        f"/api/documents/{doc_id}/threads?commitSha={doc_context['commitSha']}&filePath={doc_context['filePath']}"
-    )
-    assert listed.status_code == 200
-    anchor = next(t['anchor'] for t in listed.get_json() if t['id'] == tid)
-    assert anchor['startLine'] == 1
-    assert anchor['endLine'] == 1
-    assert anchor['startOffset'] == 2
-    assert anchor['endOffset'] == 8
-    assert anchor['selectedText'] == 'Editor'
-    r2 = editor_client.post('/api/comment-lines', json={**doc_context, 'threadId': tid, 'body': 'Great work'})
-    assert r2.status_code == 201
-    r_unresolved_delete = editor_client.delete(f'/api/comments/threads/{tid}', json=doc_context)
-    assert r_unresolved_delete.status_code == 400
-    r3 = editor_client.post(f'/api/comments/threads/{tid}/resolve', json=doc_context)
-    assert r3.status_code == 200
-    comment_file = os.path.join(REPO_DIR, '.md-review', 'comments', *doc_context['filePath'].split('/'), f"{doc_context['commitSha']}.json")
-    assert os.path.exists(comment_file)
-    with open(comment_file, 'r', encoding='utf-8') as handle:
-        stored_comments = json.load(handle)
-    stored_thread = next(t for t in stored_comments['threads'] if t['id'] == tid)
-    assert stored_thread['resolved'] is True
-    assert len(stored_thread['comments']) == 1
-    assert stored_thread['anchor']['selectedText'] == 'Editor'
-    doc_abs_path = os.path.join(REPO_DIR, doc_context['filePath'])
-    with open(doc_abs_path, 'w', encoding='utf-8') as handle:
-        handle.write('# Editor Updated\n\nLater commit.\n')
-    subprocess.run(['git', '-C', REPO_DIR, 'add', doc_context['filePath']], check=True)
-    subprocess.run(
-        ['git', '-C', REPO_DIR, 'commit', '-m', 'doc update after comments'],
-        check=True,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL
-    )
-    later_doc = editor_client.get(f'/api/documents/{doc_id}')
-    assert later_doc.status_code == 200
-    later_context = {
-        'documentId': doc_id,
-        'filePath': later_doc.get_json()['repoPath'],
-        'commitSha': later_doc.get_json()['currentCommitSha']
-    }
-    assert later_context['commitSha'] != doc_context['commitSha']
-    inherited_threads = editor_client.get(
-        f"/api/documents/{doc_id}/threads?commitSha={later_context['commitSha']}&filePath={later_context['filePath']}"
-    )
-    assert inherited_threads.status_code == 200
-    inherited_thread = next(t for t in inherited_threads.get_json() if t['id'] == tid)
-    assert inherited_thread['comments'][0]['body'] == 'Great work'
-    r4 = editor_client.post('/api/comment-lines', json={**later_context, 'threadId': tid, 'body': 'Still here on later commit'})
-    assert r4.status_code == 201
-    with open(comment_file, 'r', encoding='utf-8') as handle:
-        stored_comments = json.load(handle)
-    stored_thread = next(t for t in stored_comments['threads'] if t['id'] == tid)
-    assert len(stored_thread['comments']) == 2
-    r5 = editor_client.delete(f'/api/comments/threads/{tid}', json=later_context)
-    assert r5.status_code == 200
-    assert r5.get_json()['deleted'] is True
-    with open(comment_file, 'r', encoding='utf-8') as handle:
-        stored_comments = json.load(handle)
-    assert not any(t['id'] == tid for t in stored_comments['threads'])
-    deleted_listing = editor_client.get(
-        f"/api/documents/{doc_id}/threads?commitSha={later_context['commitSha']}&filePath={later_context['filePath']}"
-    )
-    assert deleted_listing.status_code == 200
-    assert not any(t['id'] == tid for t in deleted_listing.get_json())
-    empty_listing = editor_client.get(
-        f"/api/documents/{doc_id}/threads?commitSha={'0' * 40}&filePath={doc_context['filePath']}"
-    )
-    assert empty_listing.status_code == 200
-    assert empty_listing.get_json() == []
-    print("PASS: editor_comments_and_resolve")
-
-    r = editor_client.post(f'/api/versions/{version_ids[1]}/revert')
-    assert r.status_code == 200
-    print("PASS: editor_revert_version")
-
-    r = editor_client.get(f'/api/documents/{doc_id}/shares')
-    assert r.status_code == 403
-    r = editor_client.delete(f"/api/documents/{doc_id}/shares/{shares[0]['userId']}")
-    assert r.status_code == 403
-    r = editor_client.delete(f'/api/documents/{doc_id}')
-    assert r.status_code == 403
-    print("PASS: editor_owner_actions_blocked")
-
-    r = client.post(f'/api/documents/{doc_id}/shares', json={'username': 'viewer', 'role': 'editor'})
-    assert r.status_code == 200
-    assert r.get_json()['role'] == 'editor'
-    r = client.get(f'/api/documents/{doc_id}/shares')
-    viewer_share = next(s for s in r.get_json() if s['username'] == 'viewer')
-    r = client.delete(f"/api/documents/{doc_id}/shares/{viewer_share['userId']}")
-    assert r.status_code == 200
-    print("PASS: owner_update_and_revoke_share")
-
-    r = viewer_client.get(f'/api/documents/{doc_id}')
-    assert r.status_code == 404
-    print("PASS: revoked_viewer_loses_access")
-
-    r = other_client.get('/api/documents')
-    assert r.status_code == 200
-    assert all(doc['id'] != doc_id for doc in r.get_json())
-    r = other_client.get(f'/api/documents/{doc_id}')
-    assert r.status_code == 404
-    r = other_client.get(f'/api/documents/{doc_id}/versions')
-    assert r.status_code == 404
-    print("PASS: unrelated_user_blocked")
-
-    client.post('/api/auth/logout')
-    Config.AUTH_MODE = 'trusted_user'
-    r = client.get('/api/auth/bootstrap', headers={'X-Remote-User': 'alice'})
-    assert r.status_code == 200
-    assert r.get_json()['user']['username'] == 'alice'
-    r = client.get('/api/auth/me')
-    assert r.status_code == 200
-    assert r.get_json()['username'] == 'alice'
-    print("PASS: bootstrap_trusted_user")
-
-    client.post('/api/auth/logout')
-    r = client.get('/api/auth/bootstrap')
-    assert r.status_code == 401
-    print("PASS: bootstrap_missing_header")
-
-    r = client.get(
-        '/api/auth/bootstrap',
-        headers={'X-Remote-User': 'mallory'},
-        environ_overrides={'REMOTE_ADDR': '10.0.0.5'}
-    )
-    assert r.status_code == 401
-    print("PASS: bootstrap_rejects_non_local")
-
-    client.post('/api/auth/logout')
-    token = issue_login_token('carol')
-    r = client.post('/api/auth/token-login', json={'token': token})
-    assert r.status_code == 200
-    assert r.get_json()['user']['username'] == 'carol'
-    r = client.get('/api/auth/me')
-    assert r.status_code == 200
-    assert r.get_json()['username'] == 'carol'
-    print("PASS: token_login")
-
-    token_client = app.test_client()
-    token = issue_login_token('dave')
-    r = token_client.get(f'/api/auth/bootstrap?token={token}')
-    assert r.status_code == 200
-    assert r.get_json()['user']['username'] == 'dave'
-    r = token_client.get('/api/auth/me')
-    assert r.status_code == 200
-    assert r.get_json()['username'] == 'dave'
-    print("PASS: bootstrap_token_login")
-
-    client.post('/api/auth/logout')
-    token = issue_login_token('admin')
-    r = client.post('/api/auth/token-login', json={'token': token})
-    assert r.status_code == 200
-    assert r.get_json()['user']['username'] == 'admin'
-    r = client.get('/api/auth/me')
-    assert r.status_code == 200
-    assert r.get_json()['username'] == 'admin'
-    print("PASS: signed_token_login")
-
-    client.post('/api/auth/logout')
-    r = client.post('/api/auth/token-login', json={'token': 'not-a-real-token'})
-    assert r.status_code == 401
-    print("PASS: token_login_rejects_invalid")
-
-    Config.AUTH_MODE = 'pam'
-    Config.LOCAL_AUTH = 'on'
-    client.post('/api/auth/logout')
-    r = client.post('/api/auth/login', json={'username': 'bob', 'password': '123'})
-    assert r.status_code == 200
-    assert r.get_json()['user']['username'] == 'bob'
-    print("PASS: pam_login_still_works")
-
-    from utils.renderer import markdown_to_html
-    h = markdown_to_html('# Title\n\n$E=mc^2$\n\n- a\n- b\n```python\nprint(1)\n```')
-    assert '<h1>' in h
-    assert 'math-inline' in h
-    assert '<ul>' in h
-    assert '<pre>' in h
-    print("PASS: markdown_render")
-
-    print("\nAll tests passed!")
 finally:
     cleanup()

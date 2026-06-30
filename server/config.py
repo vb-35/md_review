@@ -15,7 +15,7 @@ class Config:
     TOKEN_LOGIN_SECRET = os.environ.get('TOKEN_LOGIN_SECRET', SECRET_KEY)
     TOKEN_LOGIN_MAX_AGE_SECONDS = int(os.environ.get('TOKEN_LOGIN_MAX_AGE_SECONDS', '120'))
     REPO_ROOT = os.environ.get('REPO_ROOT', '').strip()
-    DOCUMENTS_DIR = os.environ.get('DOCUMENTS_DIR', '.md-review/documents').strip() or '.md-review/documents'
+    PROJECTS_DIR = os.environ.get('PROJECTS_DIR', '.md-review/projects').strip() or '.md-review/projects'
     COMMENTS_DIR = os.environ.get('COMMENTS_DIR', '.md-review/comments').strip() or '.md-review/comments'
     # For local dev on non-Linux: accept any non-empty credentials
     LOCAL_AUTH = os.environ.get('LOCAL_AUTH', ('on' if os.name == 'nt' else 'off'))

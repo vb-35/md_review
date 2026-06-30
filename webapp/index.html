@@ -12,7 +12,7 @@
   <div id="app">
     <nav id="topbar" class="hidden">
       <div class="topbar-left">
-        <button id="btn-menu" title="Documents">Documents</button>
+        <button id="btn-menu" title="Projects">Projects</button>
         <span id="doc-title"></span>
         <span id="doc-role-badge" class="hidden badge"></span>
         <span id="lock-badge" class="hidden badge badge-lock"></span>
@@ -59,35 +59,28 @@
         <section class="dashboard-list-panel">
           <div class="dashboard-panel-header">
             <div>
-              <h2>Documents</h2>
-              <p>Browse owned and shared documents.</p>
+              <h2>Projects</h2>
+              <p>Browse owned and shared projects.</p>
             </div>
             <div class="dashboard-actions">
-              <input
-                type="file"
-                id="import-markdown-input"
-                class="hidden"
-                accept=".md,.markdown,text/markdown,text/plain"
-              >
-              <button id="btn-import-doc" type="button">Import Markdown</button>
-              <button id="btn-new-doc" class="primary">+ New Document</button>
+              <button id="btn-new-project" class="primary">+ New Project</button>
             </div>
           </div>
 
           <div class="dashboard-section">
             <div class="section-label">Owned by me</div>
-            <div id="owned-docs" class="document-list"></div>
+            <div id="owned-projects" class="document-list"></div>
           </div>
 
           <div class="dashboard-section">
             <div class="section-label">Shared with me</div>
-            <div id="shared-docs" class="document-list"></div>
+            <div id="shared-projects" class="document-list"></div>
           </div>
         </section>
 
         <section class="dashboard-detail-panel">
           <div id="doc-detail-empty" class="empty-state">
-            Select a document to inspect its metadata and sharing.
+            Select a project to inspect its metadata, files, and sharing.
           </div>
 
           <div id="doc-detail" class="hidden">
@@ -97,7 +90,9 @@
                 <div id="detail-subtitle" class="detail-subtitle"></div>
               </div>
               <div class="detail-actions">
-                <button id="btn-open-doc" class="primary">Open Editor</button>
+                <button id="btn-new-file" class="primary">New Markdown File</button>
+                <button id="btn-upload-asset" type="button">Upload Asset</button>
+                <input type="file" id="upload-asset-input" class="hidden">
                 <button id="btn-delete-doc" class="danger hidden">Delete</button>
               </div>
             </div>
@@ -112,6 +107,14 @@
                 <h3>Access</h3>
                 <div id="doc-access-summary" class="access-summary"></div>
               </div>
+            </div>
+
+            <div class="detail-card">
+              <div class="share-card-header">
+                <h3>Files</h3>
+                <span>Open any Markdown file</span>
+              </div>
+              <div id="project-files" class="share-list"></div>
             </div>
 
             <div id="share-card" class="detail-card hidden">
@@ -139,7 +142,7 @@
       <div id="split-view">
         <div id="editor-pane">
           <div class="pane-header">
-            <span>Source</span>
+            <span id="editor-file-label">Source</span>
             <div class="pane-actions">
               <input type="file" id="upload-image-input" class="hidden" accept="image/*,.svg">
               <button id="btn-upload-image" type="button">Upload Image</button>

@@ -408,6 +408,7 @@ select {
 
 .detail-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
 }
 
@@ -467,6 +468,35 @@ select {
 .share-list {
   display: grid;
   gap: 10px;
+}
+
+.file-row {
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface-soft);
+}
+
+.file-row-meta {
+  display: grid;
+  gap: 3px;
+}
+
+.file-row-path {
+  font-weight: 700;
+}
+
+.file-row-subtitle {
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+
+.file-row-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
 }
 
 .share-row {
