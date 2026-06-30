@@ -70,17 +70,55 @@ def test_permanent_admin_token():
 def test_diff_add_change_del():
     base = "a\nb\nc\n"
     cand = "a\nB\nd\n"
-    d = json.loads(compute_diff(base, cand))
+    d = compute_diff(base, cand)
     types = [x['type'] for x in d]
     assert 'context' in types
     assert 'added' in types
     assert 'removed' in types
+    changed_rows = [x for x in d if x['type'] in ('added', 'removed')]
+    assert all('segments' in row for row in changed_rows)
     print("PASS: diff_add_change_del")
 
 def test_diff_empty_base():
-    d = json.loads(compute_diff('', 'x\ny\n'))
+    d = compute_diff('', 'x\ny\n')
     assert all(x['type'] == 'added' for x in d)
     print("PASS: diff_empty_base")
+
+def test_diff_word_segments():
+    d = compute_diff("alpha beta\n", "alpha gamma\n")
+    removed = next(x for x in d if x['type'] == 'removed')
+    added = next(x for x in d if x['type'] == 'added')
+    assert removed['segments'] == [
+        {'text': 'alpha ', 'changed': False},
+        {'text': 'beta', 'changed': True},
+    ]
+    assert added['segments'] == [
+        {'text': 'alpha ', 'changed': False},
+        {'text': 'gamma', 'changed': True},
+    ]
+    print("PASS: diff_word_segments")
+
+def test_diff_punctuation_segments():
+    d = compute_diff("hello, world!\n", "hello world?\n")
+    removed = next(x for x in d if x['type'] == 'removed')
+    added = next(x for x in d if x['type'] == 'added')
+    assert any(seg['text'] == ',' and seg['changed'] for seg in removed['segments'])
+    assert any(seg['text'] == '?' and seg['changed'] for seg in added['segments'])
+    print("PASS: diff_punctuation_segments")
+
+def test_diff_whitespace_segments():
+    d = compute_diff("a  b\n", "a b\n")
+    removed = next(x for x in d if x['type'] == 'removed')
+    assert any(seg['text'] == '  ' and seg['changed'] for seg in removed['segments'])
+    print("PASS: diff_whitespace_segments")
+
+def test_diff_surplus_lines():
+    d = compute_diff("one\ntwo\nthree\n", "one\nTWO\n")
+    changed = [x for x in d if x['type'] in ('added', 'removed')]
+    assert len(changed) == 3
+    assert changed[-1]['type'] == 'removed'
+    assert changed[-1]['segments'] == [{'text': 'three', 'changed': True}]
+    print("PASS: diff_surplus_lines")
 
 def test_md_headings():
     h = markdown_to_html("# H1\n\n## H2\n\n### H3")
@@ -112,7 +150,9 @@ def test_md_table():
 def main():
     tests = [test_init_db, test_ensure_user, test_doc_crud, test_doc_overwrite,
              test_permanent_admin_token,
-             test_diff_add_change_del, test_diff_empty_base, test_md_headings,
+             test_diff_add_change_del, test_diff_empty_base, test_diff_word_segments,
+             test_diff_punctuation_segments, test_diff_whitespace_segments,
+             test_diff_surplus_lines, test_md_headings,
              test_md_list, test_md_code, test_md_inline_math, test_md_table]
     ok = 0; fail = 0
     with app.app_context():

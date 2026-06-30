@@ -1,4 +1,3 @@
-import json
 import uuid
 from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify, session
@@ -74,9 +73,9 @@ def compare_versions():
     if not va or not vb:
         return jsonify({'error': 'Version not found'}), 404
 
-    diff_json = compute_diff(va['markdown'], vb['markdown'])
+    diff_rows = compute_diff(va['markdown'], vb['markdown'])
     return jsonify({
-        'diff': json.loads(diff_json),
+        'diff': diff_rows,
         'versionA': va['version'],
         'versionB': vb['version'],
         'authorA': va['author_id'],
@@ -115,7 +114,6 @@ def revert_version(version_id):
         "SELECT COALESCE(MAX(version), 0) + 1 FROM document_versions WHERE document_id = ?", (doc_id,)
     ).fetchone()[0]
 
-    diff_json = compute_diff(ver['markdown'], ver['markdown'])
     author = conn.execute("SELECT username FROM users WHERE id = ?", (uid,)).fetchone()
     author_name = author['username'] if author else uid
     reverted_from = ver['version']

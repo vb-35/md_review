@@ -524,6 +524,19 @@ function escapeHtml(s) {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+function renderDiffSegments(line) {
+  if (!Array.isArray(line.segments) || !line.segments.length) {
+    return esc(line.line);
+  }
+
+  return line.segments.map((segment) => {
+    const text = esc(segment.text || '');
+    return segment.changed
+      ? `<span class="diff-token-changed">${text}</span>`
+      : text;
+  }).join('');
+}
+
 function postprocessMath(html) {
   for (const [key, { type, math }] of Object.entries(mathPlaceholders)) {
     let rendered;
@@ -782,7 +795,7 @@ function renderDiff(lines) {
   for (const line of lines) {
     const cls = line.type === 'added' ? 'added' : line.type === 'removed' ? 'removed' : 'context';
     const prefix = line.type === 'added' ? '+' : line.type === 'removed' ? '-' : ' ';
-    html += `<div class="diff-line ${cls}" data-prefix="${prefix}">${esc(line.line)}</div>`;
+    html += `<div class="diff-line ${cls}" data-prefix="${prefix}">${renderDiffSegments(line)}</div>`;
   }
   $('#diff-view').innerHTML = html || '<p style="padding:20px;color:var(--fg-dim);text-align:center;">No differences</p>';
 }

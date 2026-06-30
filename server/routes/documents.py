@@ -152,7 +152,7 @@ def update_document(doc_id):
     now = datetime.now(timezone.utc).isoformat()
 
     old_md = row['markdown']
-    diff_json = compute_diff(old_md, md)
+    diff_rows = compute_diff(old_md, md)
     version = conn.execute(
         "SELECT COALESCE(MAX(version), 0) + 1 FROM document_versions WHERE document_id = ?",
         (doc_id,)
@@ -168,7 +168,7 @@ def update_document(doc_id):
     author_name = author['username'] if author else uid
     conn.execute(
         "INSERT INTO document_versions (id, document_id, version, markdown, diff, message, author_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (version_id, doc_id, version, md, json.dumps(diff_json), f"Saved by {author_name}", uid, now)
+        (version_id, doc_id, version, md, json.dumps(diff_rows), f"Saved by {author_name}", uid, now)
     )
     conn.commit()
     return jsonify(document_to_api(get_document_for_user(doc_id, uid)))

@@ -681,6 +681,19 @@ select {
   user-select: none;
 }
 
+.diff-token-changed {
+  border-radius: 3px;
+  padding: 0 1px;
+}
+
+.diff-line.added .diff-token-changed {
+  background: rgba(127, 212, 166, 0.28);
+}
+
+.diff-line.removed .diff-token-changed {
+  background: rgba(242, 139, 130, 0.28);
+}
+
 #thread-list {
   flex: 1;
   overflow-y: auto;

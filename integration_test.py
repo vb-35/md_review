@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Quick integration test."""
+import json
 import os
 import shutil
 import sys
@@ -106,7 +107,18 @@ try:
     assert r.status_code == 200
     diff = r.get_json()['diff']
     assert any(x['type'] in ('added', 'removed') for x in diff)
+    assert any('segments' in x for x in diff if x['type'] in ('added', 'removed'))
     print(f"PASS: compare_versions ({len(diff)} diff lines)")
+
+    with app.app_context():
+        stored_diff = get_db().execute(
+            "SELECT diff FROM document_versions WHERE id = ?",
+            (version_ids[0],)
+        ).fetchone()['diff']
+        parsed_diff = json.loads(stored_diff)
+        assert isinstance(parsed_diff, list)
+        assert all(not isinstance(row, str) for row in parsed_diff)
+    print("PASS: stored_diff_json")
 
     r = client.post(f'/api/documents/{doc_id}/shares', json={'username': 'viewer', 'role': 'viewer'})
     assert r.status_code == 200
