@@ -594,6 +594,158 @@ function annotateLines(container, source) {
   }
 }
 
+function getLineStartOffset(source, lineNumber) {
+  if (lineNumber <= 1) return 0;
+
+  let offset = 0;
+  let currentLine = 1;
+  while (currentLine < lineNumber && offset < source.length) {
+    const nextBreak = source.indexOf('\n', offset);
+    if (nextBreak === -1) return source.length;
+    offset = nextBreak + 1;
+    currentLine += 1;
+  }
+  return offset;
+}
+
+function getLineTextAt(source, lineNumber) {
+  const start = getLineStartOffset(source, lineNumber);
+  const end = source.indexOf('\n', start);
+  return source.slice(start, end === -1 ? source.length : end);
+}
+
+function getPreviewCaretAtPoint(event) {
+  if (document.caretPositionFromPoint) {
+    const caret = document.caretPositionFromPoint(event.clientX, event.clientY);
+    if (caret) {
+      return { node: caret.offsetNode, offset: caret.offset };
+    }
+  }
+
+  if (document.caretRangeFromPoint) {
+    const range = document.caretRangeFromPoint(event.clientX, event.clientY);
+    if (range) {
+      return { node: range.startContainer, offset: range.startOffset };
+    }
+  }
+
+  return null;
+}
+
+function getTokenAtTextPosition(text, offset) {
+  if (!text) return null;
+
+  const clampedOffset = Math.max(0, Math.min(offset, text.length));
+  const isTokenChar = (char) => /[A-Za-z0-9_]/.test(char);
+  let index = clampedOffset;
+
+  if (index >= text.length || !isTokenChar(text[index])) {
+    if (index > 0 && isTokenChar(text[index - 1])) {
+      index -= 1;
+    } else {
+      return null;
+    }
+  }
+
+  let start = index;
+  let end = index + 1;
+  while (start > 0 && isTokenChar(text[start - 1])) start -= 1;
+  while (end < text.length && isTokenChar(text[end])) end += 1;
+
+  return {
+    token: text.slice(start, end),
+    offsetInText: start
+  };
+}
+
+function getBestTokenMatchOffset(lineText, token, preferredRatio) {
+  if (!token) return null;
+
+  const matches = [];
+  let index = -1;
+  while ((index = lineText.indexOf(token, index + 1)) !== -1) {
+    const before = index === 0 ? '' : lineText[index - 1];
+    const after = index + token.length >= lineText.length ? '' : lineText[index + token.length];
+    if (/[A-Za-z0-9_]/.test(before) || /[A-Za-z0-9_]/.test(after)) continue;
+    matches.push(index);
+  }
+
+  if (!matches.length) return null;
+  if (matches.length === 1) return matches[0];
+
+  const targetIndex = Math.max(0, Math.min(lineText.length, Math.round(lineText.length * preferredRatio)));
+  let best = matches[0];
+  let bestDistance = Math.abs(matches[0] - targetIndex);
+
+  for (const matchIndex of matches.slice(1)) {
+    const distance = Math.abs(matchIndex - targetIndex);
+    if (distance < bestDistance) {
+      best = matchIndex;
+      bestDistance = distance;
+    }
+  }
+
+  return best;
+}
+
+function revealEditorOffset(offset) {
+  const editor = $('#editor');
+  const lineHeight = parseFloat(window.getComputedStyle(editor).lineHeight) || 22;
+  const lineIndex = editor.value.slice(0, offset).split('\n').length - 1;
+  const top = lineIndex * lineHeight;
+  const bottom = top + lineHeight;
+
+  if (top < editor.scrollTop) {
+    editor.scrollTop = top;
+  } else if (bottom > editor.scrollTop + editor.clientHeight) {
+    editor.scrollTop = bottom - editor.clientHeight;
+  }
+}
+
+function moveEditorCursorToPreviewClick(event) {
+  if (event.target.closest('.comment-indicator, button, a')) return;
+
+  const preview = $('#preview');
+  const selection = window.getSelection();
+  if (selection && !selection.isCollapsed && preview.contains(selection.anchorNode)) return;
+
+  const lineEl = event.target.closest('[data-line]');
+  if (!lineEl) return;
+
+  const lineNumber = parseInt(lineEl.getAttribute('data-line'), 10);
+  if (!lineNumber) return;
+
+  const source = $('#editor').value || '';
+  const lineStart = getLineStartOffset(source, lineNumber);
+  let targetOffset = lineStart;
+
+  if (!event.target.closest('.math-block, .math-inline')) {
+    const caret = getPreviewCaretAtPoint(event);
+    const caretNode = caret && caret.node && lineEl.contains(caret.node) ? caret.node : null;
+    const textNode = caretNode && caretNode.nodeType === Node.TEXT_NODE ? caretNode : null;
+
+    if (textNode) {
+      const tokenInfo = getTokenAtTextPosition(textNode.textContent || '', caret.offset);
+      if (tokenInfo && tokenInfo.token) {
+        const lineText = getLineTextAt(source, lineNumber);
+        const renderedText = lineEl.textContent || '';
+        const preferredRatio = renderedText.length
+          ? Math.max(0, Math.min(1, tokenInfo.offsetInText / renderedText.length))
+          : 0;
+        const matchOffset = getBestTokenMatchOffset(lineText, tokenInfo.token, preferredRatio);
+        if (matchOffset !== null) {
+          targetOffset = lineStart + matchOffset;
+        }
+      }
+    }
+  }
+
+  const editor = $('#editor');
+  editor.focus();
+  editor.setSelectionRange(targetOffset, targetOffset);
+  revealEditorOffset(targetOffset);
+}
+
 function updateCommentMarkers() {
   const preview = $('#preview');
   preview.querySelectorAll('.comment-indicator').forEach((marker) => marker.remove());
@@ -711,6 +863,12 @@ function initSelectionListener() {
       if (!line) return;
       showCommentPrompt(range, line);
     }, 200);
+  });
+}
+
+function initPreviewClickNavigation() {
+  $('#preview').addEventListener('click', (event) => {
+    moveEditorCursorToPreviewClick(event);
   });
 }
 
@@ -1102,4 +1260,5 @@ $('#thread-body').addEventListener('keydown', (e) => {
 });
 
 initSelectionListener();
+initPreviewClickNavigation();
 initAuth();
