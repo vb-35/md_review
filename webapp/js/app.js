@@ -1082,9 +1082,21 @@ function highlightPreviewText(anchor) {
   }
 
   if (!spans.length) return false;
-  spans[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+  scrollElementIntoContainer(preview, spans[0]);
   setTimeout(clearThreadHighlights, 3000);
   return true;
+}
+
+function scrollElementIntoContainer(container, target) {
+  if (!container || !target) return;
+  const containerRect = container.getBoundingClientRect();
+  const targetRect = target.getBoundingClientRect();
+  const targetTop = container.scrollTop + (targetRect.top - containerRect.top);
+  const targetHeight = targetRect.height || target.offsetHeight || 0;
+  const centeredTop = targetTop - ((container.clientHeight - targetHeight) / 2);
+  const maxScrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+  const nextScrollTop = Math.max(0, Math.min(centeredTop, maxScrollTop));
+  container.scrollTo({ top: nextScrollTop, behavior: 'smooth' });
 }
 
 function renderPreview() {
@@ -1241,7 +1253,7 @@ function highlightThreadInPreview(threadId) {
     const target = preview.querySelector(`[data-line="${thread.anchor.startLine}"]`);
     if (target) {
       target.classList.add('thread-text-highlight');
-      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      scrollElementIntoContainer(preview, target);
       setTimeout(() => target.classList.remove('thread-text-highlight'), 3000);
     }
   }
@@ -1251,8 +1263,9 @@ function openThreadInPanel(threadId) {
   $('#comments-panel').classList.remove('hidden');
   loadThreads().then(() => {
     const threadEl = document.querySelector(`.thread[data-thread-id="${threadId}"]`);
+    const threadList = $('#thread-list');
     if (threadEl) {
-      threadEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      scrollElementIntoContainer(threadList, threadEl);
       threadEl.style.outline = '2px solid var(--accent)';
       setTimeout(() => {
         threadEl.style.outline = '';
