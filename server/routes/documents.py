@@ -2,7 +2,7 @@ import uuid
 import json
 from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify, session
-from models import get_db, ensure_user, row_to_dict
+from models import get_db, get_document_for_user, row_to_dict
 from utils.renderer import markdown_to_html
 from utils.diff import compute_diff
 
@@ -17,11 +17,22 @@ def require_auth(f):
         return f(*args, **kwargs)
     return decorated
 
+def get_owned_document_or_404(doc_id, user_id):
+    row = get_document_for_user(doc_id, user_id)
+    if not row:
+        return None, (jsonify({'error': 'Not found'}), 404)
+    return row, None
+
 @doc_bp.route('/documents', methods=['GET'])
 @require_auth
 def list_documents():
     conn = get_db()
-    rows = conn.execute("SELECT id, title, updated_by, updated_at, lock_owner_id FROM documents ORDER BY updated_at DESC").fetchall()
+    uid = session['user_id']
+    rows = conn.execute(
+        "SELECT id, title, owner_id, updated_by, updated_at, lock_owner_id "
+        "FROM documents WHERE owner_id = ? ORDER BY updated_at DESC",
+        (uid,)
+    ).fetchall()
     return jsonify([dict(r) for r in rows])
 
 @doc_bp.route('/documents', methods=['POST'])
@@ -42,8 +53,8 @@ def create_document():
     username_val = username_row['username'] if username_row else uid
 
     conn.execute(
-        "INSERT INTO documents (id, title, markdown, html_cache, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (doc_id, data['title'], md, html_cache, uid, now)
+        "INSERT INTO documents (id, title, markdown, html_cache, owner_id, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (doc_id, data['title'], md, html_cache, uid, uid, now)
     )
 
     # Create initial version
@@ -58,10 +69,9 @@ def create_document():
 @doc_bp.route('/documents/<doc_id>', methods=['GET'])
 @require_auth
 def get_document(doc_id):
-    conn = get_db()
-    row = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
-    if not row:
-        return jsonify({'error': 'Not found'}), 404
+    row, error = get_owned_document_or_404(doc_id, session['user_id'])
+    if error:
+        return error
     return jsonify(row_to_dict(row))
 
 @doc_bp.route('/documents/<doc_id>', methods=['PUT'])
@@ -73,9 +83,9 @@ def update_document(doc_id):
 
     uid = session['user_id']
     conn = get_db()
-    row = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
-    if not row:
-        return jsonify({'error': 'Not found'}), 404
+    row, error = get_owned_document_or_404(doc_id, uid)
+    if error:
+        return error
 
     md = data.get('markdown', row['markdown'])
     title = data.get('title', row['title'])
@@ -105,10 +115,11 @@ def update_document(doc_id):
 @doc_bp.route('/documents/<doc_id>', methods=['DELETE'])
 @require_auth
 def delete_document(doc_id):
+    uid = session['user_id']
     conn = get_db()
-    row = conn.execute("SELECT id FROM documents WHERE id = ?", (doc_id,)).fetchone()
-    if not row:
-        return jsonify({'error': 'Not found'}), 404
+    row, error = get_owned_document_or_404(doc_id, uid)
+    if error:
+        return error
     conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
     conn.commit()
     return jsonify({'ok': True})
@@ -118,9 +129,9 @@ def delete_document(doc_id):
 def lock_document(doc_id):
     uid = session['user_id']
     conn = get_db()
-    row = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
-    if not row:
-        return jsonify({'error': 'Not found'}), 404
+    row, error = get_owned_document_or_404(doc_id, uid)
+    if error:
+        return error
     if row['lock_owner_id'] and row['lock_owner_id'] != uid:
         return jsonify({'error': 'Document is locked by another user'}), 423
     now = datetime.now(timezone.utc).isoformat()
@@ -133,9 +144,9 @@ def lock_document(doc_id):
 def unlock_document(doc_id):
     uid = session['user_id']
     conn = get_db()
-    row = conn.execute("SELECT * FROM documents WHERE id = ?", (doc_id,)).fetchone()
-    if not row:
-        return jsonify({'error': 'Not found'}), 404
+    row, error = get_owned_document_or_404(doc_id, uid)
+    if error:
+        return error
     if row['lock_owner_id'] and row['lock_owner_id'] != uid:
         return jsonify({'error': 'You do not own this lock'}), 403
     conn.execute("UPDATE documents SET lock_owner_id = NULL, locked_at = NULL WHERE id = ?", (doc_id,))

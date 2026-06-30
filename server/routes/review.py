@@ -2,7 +2,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify, session
-from models import get_db, ensure_user, row_to_dict
+from models import get_db, get_document_for_user, user_owns_thread
 from utils.diff import compute_diff
 
 review_bp = Blueprint('review', __name__)
@@ -16,11 +16,19 @@ def require_auth(f):
         return f(*args, **kwargs)
     return decorated
 
+def require_owned_document(doc_id, user_id):
+    if not get_document_for_user(doc_id, user_id):
+        return jsonify({'error': 'Not found'}), 404
+    return None
+
 # ===== Version History =====
 
 @review_bp.route('/documents/<doc_id>/versions', methods=['GET'])
 @require_auth
 def list_versions(doc_id):
+    ownership_error = require_owned_document(doc_id, session['user_id'])
+    if ownership_error:
+        return ownership_error
     conn = get_db()
     rows = conn.execute(
         "SELECT dv.*, u.username AS author_name "
@@ -46,6 +54,10 @@ def compare_versions():
 
     if not ver_a or not ver_b:
         return jsonify({'error': 'versionA and versionB required'}), 400
+
+    ownership_error = require_owned_document(doc_id, session['user_id'])
+    if ownership_error:
+        return ownership_error
 
     conn = get_db()
     va = conn.execute("SELECT * FROM document_versions WHERE id = ? AND document_id = ?", (ver_a, doc_id)).fetchone()
@@ -75,6 +87,9 @@ def revert_version(version_id):
         return jsonify({'error': 'Version not found'}), 404
 
     doc_id = ver['document_id']
+    ownership_error = require_owned_document(doc_id, uid)
+    if ownership_error:
+        return ownership_error
     now = datetime.now(timezone.utc).isoformat()
     md = ver['markdown']
 
@@ -121,6 +136,10 @@ def create_thread():
     cs_id = data.get('changeSetId')
     now = datetime.now(timezone.utc).isoformat()
 
+    ownership_error = require_owned_document(doc_id, uid)
+    if ownership_error:
+        return ownership_error
+
     conn = get_db()
     conn.execute(
         "INSERT INTO comment_threads (id, document_id, change_set_id, created_by, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -155,6 +174,9 @@ def add_comment():
     if not data or 'threadId' not in data or 'body' not in data:
         return jsonify({'error': 'threadId and body required'}), 400
 
+    if not user_owns_thread(data['threadId'], uid):
+        return jsonify({'error': 'Not found'}), 404
+
     comment_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
 
@@ -169,6 +191,9 @@ def add_comment():
 @review_bp.route('/documents/<doc_id>/threads', methods=['GET'])
 @require_auth
 def list_threads(doc_id):
+    ownership_error = require_owned_document(doc_id, session['user_id'])
+    if ownership_error:
+        return ownership_error
     conn = get_db()
     rows = conn.execute(
         "SELECT ct.* FROM comment_threads ct WHERE ct.document_id = ? AND ct.change_set_id IS NULL ORDER BY ct.created_at DESC",
@@ -221,6 +246,8 @@ def list_threads(doc_id):
 @require_auth
 def toggle_resolve(thread_id):
     uid = session['user_id']
+    if not user_owns_thread(thread_id, uid):
+        return jsonify({'error': 'Not found'}), 404
     conn = get_db()
     row = conn.execute("SELECT id FROM comment_threads WHERE id = ?", (thread_id,)).fetchone()
     if not row:

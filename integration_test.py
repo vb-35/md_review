@@ -26,6 +26,7 @@ os.makedirs(Config.SESSION_FILE_DIR, exist_ok=True)
 init_db()
 app = create_app()
 client = app.test_client()
+other_client = app.test_client()
 doc_id = None
 version_ids = []
 
@@ -119,7 +120,19 @@ try:
     assert r.status_code == 200
     print("PASS: lock_doc")
 
-    # 13. Trusted-user bootstrap creates a session
+    # 13. Ownership is enforced across users
+    r = other_client.post('/api/auth/login', json={'username': 'other', 'password': 'abc'})
+    assert r.status_code == 200
+    r = other_client.get('/api/documents')
+    assert r.status_code == 200
+    assert all(doc['id'] != doc_id for doc in r.get_json())
+    r = other_client.get(f'/api/documents/{doc_id}')
+    assert r.status_code == 404
+    r = other_client.get(f'/api/documents/{doc_id}/versions')
+    assert r.status_code == 404
+    print("PASS: doc_ownership_enforced")
+
+    # 14. Trusted-user bootstrap creates a session
     client.post('/api/auth/logout')
     Config.AUTH_MODE = 'trusted_user'
     r = client.get('/api/auth/bootstrap', headers={'X-Remote-User': 'alice'})
@@ -130,13 +143,13 @@ try:
     assert r.get_json()['username'] == 'alice'
     print("PASS: bootstrap_trusted_user")
 
-    # 14. Missing trusted header returns 401
+    # 15. Missing trusted header returns 401
     client.post('/api/auth/logout')
     r = client.get('/api/auth/bootstrap')
     assert r.status_code == 401
     print("PASS: bootstrap_missing_header")
 
-    # 15. Non-local trusted header is rejected
+    # 16. Non-local trusted header is rejected
     r = client.get(
         '/api/auth/bootstrap',
         headers={'X-Remote-User': 'mallory'},
@@ -145,7 +158,7 @@ try:
     assert r.status_code == 401
     print("PASS: bootstrap_rejects_non_local")
 
-    # 16. Token login creates a session
+    # 17. Token login creates a session
     client.post('/api/auth/logout')
     token = issue_login_token('carol')
     r = client.post('/api/auth/token-login', json={'token': token})
@@ -156,7 +169,7 @@ try:
     assert r.get_json()['username'] == 'carol'
     print("PASS: token_login")
 
-    # 17. Permanent token login creates a session for a separate regular user
+    # 18. Permanent token login creates a session for a separate regular user
     client.post('/api/auth/logout')
     r = client.post('/api/auth/token-login', json={'token': Config.PERMANENT_ADMIN_TOKEN})
     assert r.status_code == 200
@@ -166,13 +179,13 @@ try:
     assert r.get_json()['username'] == Config.PERMANENT_ADMIN_USERNAME
     print("PASS: permanent_token_login")
 
-    # 18. Invalid token is rejected
+    # 19. Invalid token is rejected
     client.post('/api/auth/logout')
     r = client.post('/api/auth/token-login', json={'token': 'not-a-real-token'})
     assert r.status_code == 401
     print("PASS: token_login_rejects_invalid")
 
-    # 19. Password login still works in PAM mode
+    # 20. Password login still works in PAM mode
     Config.AUTH_MODE = 'pam'
     Config.LOCAL_AUTH = 'on'
     client.post('/api/auth/logout')
@@ -181,7 +194,7 @@ try:
     assert r.get_json()['user']['username'] == 'bob'
     print("PASS: pam_login_still_works")
 
-    # 20. Markdown render
+    # 21. Markdown render
     from utils.renderer import markdown_to_html
     h = markdown_to_html('# Title\n\n$E=mc^2$\n\n- a\n- b\n```python\nprint(1)\n```')
     assert '<h1>' in h
@@ -190,6 +203,6 @@ try:
     assert '<pre>' in h
     print("PASS: markdown_render")
 
-    print("\nAll 20 tests passed!")
+    print("\nAll 21 tests passed!")
 finally:
     cleanup()

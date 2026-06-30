@@ -37,20 +37,21 @@ def test_doc_crud():
     uid = ensure_user('bob')
     did = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
-    conn.execute("INSERT INTO documents (id,title,markdown,updated_by,updated_at) VALUES (?,?,?,?,?)",
-        (did, 'Doc1', '# Hello', uid, now))
+    conn.execute("INSERT INTO documents (id,title,markdown,owner_id,updated_by,updated_at) VALUES (?,?,?,?,?,?)",
+        (did, 'Doc1', '# Hello', uid, uid, now))
     conn.commit()
     r = conn.execute("SELECT * FROM documents WHERE id=?", (did,)).fetchone()
     assert r['title'] == 'Doc1'
     assert r['markdown'] == '# Hello'
+    assert r['owner_id'] == uid
     print("PASS: doc_crud")
 
 def test_doc_overwrite():
     conn = get_db()
     uid = ensure_user('carol')
     did = str(uuid.uuid4())
-    conn.execute("INSERT INTO documents (id,title,markdown,updated_by,updated_at) VALUES (?,?,?,?,?)",
-        (did, 'D', 'v1', uid, datetime.now(timezone.utc).isoformat()))
+    conn.execute("INSERT INTO documents (id,title,markdown,owner_id,updated_by,updated_at) VALUES (?,?,?,?,?,?)",
+        (did, 'D', 'v1', uid, uid, datetime.now(timezone.utc).isoformat()))
     conn.commit()
     conn.execute("UPDATE documents SET markdown='v2' WHERE id=?", (did,))
     conn.commit()

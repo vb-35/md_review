@@ -41,10 +41,12 @@ def init_db():
         title TEXT NOT NULL,
         markdown TEXT NOT NULL DEFAULT '',
         html_cache TEXT,
+        owner_id TEXT NOT NULL,
         updated_by TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         lock_owner_id TEXT,
         locked_at TEXT,
+        FOREIGN KEY (owner_id) REFERENCES users(id),
         FOREIGN KEY (lock_owner_id) REFERENCES users(id)
     );
 
@@ -129,6 +131,13 @@ def init_db():
         conn.commit()
     except sqlite3.OperationalError:
         pass
+    try:
+        conn.execute("ALTER TABLE documents ADD COLUMN owner_id TEXT")
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass
+    conn.execute("UPDATE documents SET owner_id = updated_by WHERE owner_id IS NULL")
+    conn.commit()
     return conn
 
 def ensure_user(username):
@@ -155,6 +164,23 @@ def get_user_by_id(user_id):
         (user_id,)
     ).fetchone()
     return row_to_dict(row)
+
+def get_document_for_user(doc_id, user_id):
+    row = get_db().execute(
+        "SELECT * FROM documents WHERE id = ? AND owner_id = ?",
+        (doc_id, user_id)
+    ).fetchone()
+    return row
+
+def user_owns_thread(thread_id, user_id):
+    row = get_db().execute(
+        "SELECT ct.id "
+        "FROM comment_threads ct "
+        "JOIN documents d ON d.id = ct.document_id "
+        "WHERE ct.id = ? AND d.owner_id = ?",
+        (thread_id, user_id)
+    ).fetchone()
+    return row is not None
 
 def row_to_dict(row):
     if row is None:
