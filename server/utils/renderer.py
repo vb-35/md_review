@@ -13,6 +13,13 @@ def markdown_to_html(md_text):
     in_list = False
     list_items = []
 
+    def is_table_separator(text):
+        stripped = text.strip()
+        if not stripped.startswith('|'):
+            return False
+        cells = [cell.strip() for cell in stripped.strip('|').split('|')]
+        return bool(cells) and all(cell and set(cell) <= set('-:') for cell in cells)
+
     def flush_list():
         nonlocal in_list, list_items
         if in_list:
@@ -30,22 +37,18 @@ def markdown_to_html(md_text):
         nonlocal in_table, table_rows
         if in_table and len(table_rows) > 0:
             result.append('<table>')
-            for idx, row in enumerate(table_rows):
-                tag = 'th' if idx == 0 else ('td' if row.strip() else 'td')
-                if idx == 0:
-                    result.append('  <thead><tr>')
-                    for cell in row:
-                        result.append(f'    <th>{_inline(cell.strip())}</th>')
-                    result.append('  </tr></thead>')
-                elif '|' in row or row.strip():
-                    if idx == 1:
-                        result.append('  <tbody>')
-                        continue
+            result.append('  <thead><tr>')
+            for cell in table_rows[0]:
+                result.append(f'    <th>{_inline(cell.strip())}</th>')
+            result.append('  </tr></thead>')
+            if len(table_rows) > 1:
+                result.append('  <tbody>')
+                for row in table_rows[1:]:
                     result.append('  <tr>')
                     for cell in row:
                         result.append(f'    <td>{_inline(cell.strip())}</td>')
                     result.append('  </tr>')
-            result.append('  </tbody>')
+                result.append('  </tbody>')
             result.append('</table>')
         in_table = False
         table_rows = []
@@ -114,10 +117,13 @@ def markdown_to_html(md_text):
             flush_table()
             in_list = True
             list_items.append(stripped)
-        elif '|---' not in stripped and '|' in stripped and ('|' in stripped):
+        elif is_table_separator(stripped):
+            i += 1
+            continue
+        elif stripped.startswith('|') and '|' in stripped[1:]:
             flush_list()
             in_table = True
-            table_rows.append([c.split('|')[0] for c in stripped.split('|')[1:] if c])
+            table_rows.append([cell.strip() for cell in stripped.strip('|').split('|')])
         else:
             flush_table()
             flush_list()

@@ -156,13 +156,23 @@ try:
     assert r.get_json()['username'] == 'carol'
     print("PASS: token_login")
 
-    # 17. Invalid token is rejected
+    # 17. Permanent token login creates a session for a separate regular user
+    client.post('/api/auth/logout')
+    r = client.post('/api/auth/token-login', json={'token': Config.PERMANENT_ADMIN_TOKEN})
+    assert r.status_code == 200
+    assert r.get_json()['user']['username'] == Config.PERMANENT_ADMIN_USERNAME
+    r = client.get('/api/auth/me')
+    assert r.status_code == 200
+    assert r.get_json()['username'] == Config.PERMANENT_ADMIN_USERNAME
+    print("PASS: permanent_token_login")
+
+    # 18. Invalid token is rejected
     client.post('/api/auth/logout')
     r = client.post('/api/auth/token-login', json={'token': 'not-a-real-token'})
     assert r.status_code == 401
     print("PASS: token_login_rejects_invalid")
 
-    # 18. Password login still works in PAM mode
+    # 19. Password login still works in PAM mode
     Config.AUTH_MODE = 'pam'
     Config.LOCAL_AUTH = 'on'
     client.post('/api/auth/logout')
@@ -171,7 +181,7 @@ try:
     assert r.get_json()['user']['username'] == 'bob'
     print("PASS: pam_login_still_works")
 
-    # 19. Markdown render
+    # 20. Markdown render
     from utils.renderer import markdown_to_html
     h = markdown_to_html('# Title\n\n$E=mc^2$\n\n- a\n- b\n```python\nprint(1)\n```')
     assert '<h1>' in h
@@ -180,6 +190,6 @@ try:
     assert '<pre>' in h
     print("PASS: markdown_render")
 
-    print("\nAll 19 tests passed!")
+    print("\nAll 20 tests passed!")
 finally:
     cleanup()

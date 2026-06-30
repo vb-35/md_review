@@ -1,5 +1,4 @@
 import sqlite3
-import json
 import uuid
 from datetime import datetime, timezone
 from flask import g
@@ -130,7 +129,7 @@ def init_db():
         conn.commit()
     except sqlite3.OperationalError:
         pass
-    conn.close()
+    return conn
 
 def ensure_user(username):
     conn = get_db()
@@ -142,6 +141,20 @@ def ensure_user(username):
     conn.execute("INSERT INTO users (id, username, created_at) VALUES (?, ?, ?)", (uid, username, now))
     conn.commit()
     return uid
+
+def get_user_by_username(username):
+    row = get_db().execute(
+        "SELECT id, username, created_at FROM users WHERE username = ?",
+        (username,)
+    ).fetchone()
+    return row_to_dict(row)
+
+def get_user_by_id(user_id):
+    row = get_db().execute(
+        "SELECT id, username, created_at FROM users WHERE id = ?",
+        (user_id,)
+    ).fetchone()
+    return row_to_dict(row)
 
 def row_to_dict(row):
     if row is None:

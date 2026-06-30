@@ -32,4 +32,21 @@ def verify_login_token(token):
     if not username:
         return None, 'Invalid login token'
 
-    return username, None
+    return {
+        'username': username,
+        'source': 'signed'
+    }, None
+
+
+def verify_any_login_token(token):
+    if token == Config.PERMANENT_ADMIN_TOKEN:
+        return {
+            'username': Config.PERMANENT_ADMIN_USERNAME,
+            'source': 'permanent'
+        }, None
+
+    token_payload, error = verify_login_token(token)
+    if token_payload:
+        return token_payload, None
+
+    return None, error

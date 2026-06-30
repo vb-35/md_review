@@ -52,7 +52,7 @@ def create_app():
         def base_redirect():
             return redirect(f'{base_path}/', code=308)
 
-    init_db()
+    init_db().close()
     return app
 
 if __name__ == '__main__':

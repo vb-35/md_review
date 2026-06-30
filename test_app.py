@@ -1,21 +1,26 @@
 #!/usr/bin/env python3
 """Tests for MD Review app."""
-import sys, os, json, uuid
+import sys, os, json, uuid, tempfile
 from datetime import datetime, timezone
+from flask import Flask
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
 
 from config import Config
-Config.DATABASE = ':memory:'
+Config.DATABASE = os.path.join(tempfile.mkdtemp(prefix='md_review_test_app_'), 'test.db')
 from models import get_db, init_db, ensure_user
 from utils.diff import compute_diff
+from utils.login_tokens import verify_any_login_token
 from utils.renderer import markdown_to_html
+
+app = Flask(__name__)
 
 def test_init_db():
     db = init_db()
     t = [r['name'] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
     for name in ('users','documents','change_sets','comment_threads','comments','comment_anchors'):
         assert name in t, f"{name} missing"
+    db.close()
     print("PASS: init_db")
 
 def test_ensure_user():
@@ -53,6 +58,13 @@ def test_doc_overwrite():
     assert r['markdown'] == 'v2'
     assert conn.execute("SELECT COUNT(*) FROM change_sets").fetchone()[0] == 0
     print("PASS: doc_overwrite_no_versions")
+
+def test_permanent_admin_token():
+    payload, error = verify_any_login_token(Config.PERMANENT_ADMIN_TOKEN)
+    assert error is None
+    assert payload['username'] == Config.PERMANENT_ADMIN_USERNAME
+    assert payload['source'] == 'permanent'
+    print("PASS: permanent_admin_token")
 
 def test_diff_add_change_del():
     base = "a\nb\nc\n"
@@ -98,16 +110,18 @@ def test_md_table():
 
 def main():
     tests = [test_init_db, test_ensure_user, test_doc_crud, test_doc_overwrite,
+             test_permanent_admin_token,
              test_diff_add_change_del, test_diff_empty_base, test_md_headings,
              test_md_list, test_md_code, test_md_inline_math, test_md_table]
     ok = 0; fail = 0
-    for t in tests:
-        try:
-            t(); ok += 1
-        except AssertionError as e:
-            print(f"FAIL: {t.__name__}: {e}"); fail += 1
-        except Exception as e:
-            print(f"ERROR: {t.__name__}: {type(e).__name__}: {e}"); fail += 1
+    with app.app_context():
+        for t in tests:
+            try:
+                t(); ok += 1
+            except AssertionError as e:
+                print(f"FAIL: {t.__name__}: {e}"); fail += 1
+            except Exception as e:
+                print(f"ERROR: {t.__name__}: {type(e).__name__}: {e}"); fail += 1
     print(f"\n{ok} passed, {fail} failed")
     return fail
 

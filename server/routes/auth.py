@@ -5,7 +5,7 @@ from flask import Blueprint, request, jsonify, session
 
 from config import Config
 from utils.pam_auth import authenticate
-from utils.login_tokens import verify_login_token
+from utils.login_tokens import verify_any_login_token
 from models import ensure_user
 
 auth_bp = Blueprint('auth', __name__)
@@ -94,11 +94,11 @@ def token_login():
     if not data or 'token' not in data:
         return jsonify({'error': 'token required'}), 400
 
-    username, error = verify_login_token(data['token'])
-    if error:
+    token_payload, error = verify_any_login_token(data['token'])
+    if error or not token_payload:
         return jsonify({'error': error}), 401
 
-    username = normalize_trusted_username(username)
+    username = normalize_trusted_username(token_payload['username'])
     if not username:
         return jsonify({'error': 'Invalid login token'}), 401
 
