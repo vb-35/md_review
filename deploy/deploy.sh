@@ -20,17 +20,13 @@ LOCAL_AUTH="${LOCAL_AUTH:-off}"
 PAM_SERVICE="${PAM_SERVICE:-login}"
 
 print_login_url() {
-  if [[ ! -x "$ROOT_DIR/deploy/print-login-url.sh" ]]; then
-    chmod +x "$ROOT_DIR/deploy/print-login-url.sh" 2>/dev/null || true
-  fi
-  if [[ -x "$ROOT_DIR/deploy/print-login-url.sh" ]]; then
-    APP_BASE_PATH="$APP_BASE_PATH" \
-    PORT="$PORT" \
-    LOGIN_HOST="127.0.0.1" \
-    TOKEN_LOGIN_SECRET="$TOKEN_LOGIN_SECRET" \
-    TOKEN_LOGIN_MAX_AGE_SECONDS="$TOKEN_LOGIN_MAX_AGE_SECONDS" \
-    "$ROOT_DIR/deploy/print-login-url.sh" || true
-  fi
+  APP_BASE_PATH="$APP_BASE_PATH" \
+  PORT="$PORT" \
+  LOGIN_HOST="127.0.0.1" \
+  TOKEN_LOGIN_SECRET="$TOKEN_LOGIN_SECRET" \
+  TOKEN_LOGIN_MAX_AGE_SECONDS="$TOKEN_LOGIN_MAX_AGE_SECONDS" \
+  MD_REVIEW_ROOT="$ROOT_DIR" \
+  python3 "$ROOT_DIR/md-reviewctl" login-url || true
 }
 
 mkdir -p "$ROOT_DIR/data" "$SESSION_FILE_DIR"

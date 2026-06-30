@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+import argparse
+import getpass
+import io
+import os
+import pwd
+import shutil
+import subprocess
+import sys
+from contextlib import redirect_stdout
+from urllib.parse import quote
+
+
+def resolve_root():
+    env_root = os.environ.get('MD_REVIEW_ROOT', '').strip()
+    if env_root:
+        return os.path.abspath(env_root)
+
+    script_dir = os.path.abspath(os.path.dirname(__file__))
+    for candidate in (script_dir, os.getcwd()):
+        if os.path.exists(os.path.join(candidate, 'server', 'run.py')) and os.path.exists(os.path.join(candidate, 'deploy')):
+            return candidate
+    raise SystemExit('Set MD_REVIEW_ROOT to the project root')
+
+
+def load_token_issuer(root_dir):
+    server_dir = os.path.join(root_dir, 'server')
+    if server_dir not in sys.path:
+        sys.path.insert(0, server_dir)
+    from utils.login_tokens import issue_login_token
+    return issue_login_token
+
+
+def current_username():
+    return getpass.getuser()
+
+
+def is_root():
+    return hasattr(os, 'geteuid') and os.geteuid() == 0
+
+
+def validate_local_user(username):
+    pwd.getpwnam(username)
+
+
+def env_flag(name, default):
+    return os.environ.get(name, default)
+
+
+def root_dir():
+    return resolve_root()
+
+
+def data_dir():
+    return os.path.join(root_dir(), 'data')
+
+
+def pid_file():
+    return env_flag('PID_FILE', os.path.join(data_dir(), 'md_review.pid'))
+
+
+def log_file():
+    return env_flag('LOG_FILE', os.path.join(data_dir(), 'server.log'))
+
+
+def port():
+    return env_flag('PORT', '18080')
+
+
+def app_base_path():
+    return env_flag('APP_BASE_PATH', '')
+
+
+def secret_file():
+    return env_flag('SECRET_FILE', os.path.join(data_dir(), 'secret_key'))
+
+
+def ensure_secret():
+    token_secret = os.environ.get('TOKEN_LOGIN_SECRET', '').strip()
+    if token_secret:
+        return token_secret
+    secret_path = secret_file()
+    if not os.path.exists(secret_path):
+        raise SystemExit(f'Missing secret file: {secret_path}')
+    with open(secret_path, encoding='utf-8') as handle:
+        return handle.read().strip()
+
+
+def url_path():
+    base_path = app_base_path().strip()
+    if not base_path:
+        return '/'
+    return f"{base_path.rstrip('/')}/"
+
+
+def cmd_token(args):
+    username = args.username or current_username()
+    if args.username and username != current_username() and not is_root():
+        raise SystemExit('Only root may generate a token for another user')
+    try:
+        validate_local_user(username)
+    except KeyError:
+        raise SystemExit(f'Unknown local user: {username}')
+    os.environ.setdefault('TOKEN_LOGIN_SECRET', ensure_secret())
+    issue_login_token = load_token_issuer(root_dir())
+    print(issue_login_token(username))
+
+
+def cmd_start(args):
+    raise SystemExit(subprocess.call([os.path.join(root_dir(), 'deploy', 'deploy.sh')], cwd=root_dir()))
+
+
+def cmd_stop(args):
+    pid_path = pid_file()
+    if not os.path.exists(pid_path):
+        print('md_review is not running')
+        return
+    with open(pid_path, encoding='utf-8') as handle:
+        pid = handle.read().strip()
+    if pid:
+        try:
+            os.kill(int(pid), 0)
+            os.kill(int(pid), 15)
+            print(f'Stopped md_review (PID {pid})')
+        except ProcessLookupError:
+            print('Stale PID file removed')
+    else:
+        print('Stale PID file removed')
+    try:
+        os.remove(pid_path)
+    except FileNotFoundError:
+        pass
+
+
+def cmd_status(args):
+    pid_path = pid_file()
+    if not os.path.exists(pid_path):
+        raise SystemExit('md_review is not running')
+    with open(pid_path, encoding='utf-8') as handle:
+        pid = handle.read().strip()
+    if not pid:
+        raise SystemExit('md_review pid file exists but process is not running')
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        raise SystemExit('md_review pid file exists but process is not running')
+    print('md_review is running')
+    print(f'PID: {pid}')
+    print(f'Port: {port()}')
+    print(f'Log: {log_file()}')
+    if shutil.which('ss'):
+        subprocess.call(['ss', '-ltnp'])
+
+
+def cmd_login_url(args):
+    username = args.username or current_username()
+    token_args = type('Args', (), {'username': username})()
+    token_buffer = io.StringIO()
+    with redirect_stdout(token_buffer):
+        cmd_token(token_args)
+    host = env_flag('LOGIN_HOST', '127.0.0.1')
+    print('Open this URL in the browser that is using your SSH tunnel:')
+    print(f"http://{host}:{port()}{url_path()}?token={quote(token_buffer.getvalue().strip())}")
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(prog='md-reviewctl')
+    subparsers = parser.add_subparsers(dest='command', required=True)
+
+    token_parser = subparsers.add_parser('token')
+    token_parser.add_argument('username', nargs='?')
+    token_parser.set_defaults(func=cmd_token)
+
+    login_url_parser = subparsers.add_parser('login-url')
+    login_url_parser.add_argument('username', nargs='?')
+    login_url_parser.set_defaults(func=cmd_login_url)
+
+    start_parser = subparsers.add_parser('start')
+    start_parser.set_defaults(func=cmd_start)
+
+    stop_parser = subparsers.add_parser('stop')
+    stop_parser.set_defaults(func=cmd_stop)
+
+    status_parser = subparsers.add_parser('status')
+    status_parser.set_defaults(func=cmd_status)
+    return parser
+
+
+def main():
+    parser = build_parser()
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == '__main__':
+    main()

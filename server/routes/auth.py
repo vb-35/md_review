@@ -5,7 +5,7 @@ from flask import Blueprint, request, jsonify, session
 
 from config import Config
 from utils.pam_auth import authenticate
-from utils.login_tokens import verify_any_login_token
+from utils.login_tokens import verify_login_token
 from models import ensure_user
 
 auth_bp = Blueprint('auth', __name__)
@@ -24,7 +24,7 @@ def login_user(username):
     return {'id': uid, 'username': username}
 
 def login_user_from_token(token):
-    token_payload, error = verify_any_login_token(token)
+    token_payload, error = verify_login_token(token)
     if error or not token_payload:
         return None, error
 

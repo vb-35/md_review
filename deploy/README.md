@@ -2,12 +2,21 @@
 
 This app runs directly with `gunicorn`. Use the scripts in `deploy/` to start it, check status, and stop it.
 
+## Operator Contract
+
+- Deployed installs must set `SECRET_KEY` and `TOKEN_LOGIN_SECRET`.
+- Writable paths must exist for the database and Flask session directory.
+- `md-reviewctl token` is the intended login-token command for any local user.
+- `md-reviewctl start` and `md-reviewctl stop` are intended to be restricted to sudoers when this is later wired into a real service install.
+
+Example operator env file: `deploy/md-review.env.example`
+
 ### Run
 
 From the project root:
 
 ```bash
-bash deploy/deploy.sh
+./md-reviewctl start
 ```
 
 What it does:
@@ -29,13 +38,14 @@ Open that printed URL in the browser that uses the tunnel. The token is exchange
 If you need another fresh login URL later:
 
 ```bash
-bash deploy/print-login-url.sh
+./md-reviewctl token
+./md-reviewctl login-url
 ```
 
 ### Status
 
 ```bash
-bash deploy/status.sh
+./md-reviewctl status
 ```
 
 Useful checks:
@@ -49,7 +59,7 @@ curl -s http://127.0.0.1:18080/api/auth/me
 ### Stop
 
 ```bash
-bash deploy/stop.sh
+./md-reviewctl stop
 ```
 
 ### Notes
@@ -58,3 +68,4 @@ bash deploy/stop.sh
 - Logs are written to `data/server.log`.
 - The signed login URL is the intended way to carry the current SSH user into the browser session.
 - `deploy/deploy.sh` also prints the login URL when the server is already running.
+- If `md-reviewctl` is installed outside the repo, set `MD_REVIEW_ROOT` to the project root or install it as a symlink.

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Tests for MD Review app."""
-import sys, os, json, uuid, tempfile
+import sys, os, json, uuid, tempfile, io, importlib.util
 from datetime import datetime, timezone
+from contextlib import redirect_stdout
+from importlib.machinery import SourceFileLoader
 from flask import Flask
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
@@ -10,8 +12,13 @@ from config import Config
 Config.DATABASE = os.path.join(tempfile.mkdtemp(prefix='md_review_test_app_'), 'test.db')
 from models import get_db, init_db, ensure_user
 from utils.diff import compute_diff
-from utils.login_tokens import verify_any_login_token
+from utils.login_tokens import issue_login_token, verify_login_token
 from utils.renderer import markdown_to_html
+
+CTL_PATH = os.path.join(os.path.dirname(__file__), 'md-reviewctl')
+CTL_SPEC = importlib.util.spec_from_loader('md_reviewctl', SourceFileLoader('md_reviewctl', CTL_PATH))
+md_reviewctl = importlib.util.module_from_spec(CTL_SPEC)
+CTL_SPEC.loader.exec_module(md_reviewctl)
 
 app = Flask(__name__)
 
@@ -60,12 +67,51 @@ def test_doc_overwrite():
     assert conn.execute("SELECT COUNT(*) FROM change_sets").fetchone()[0] == 0
     print("PASS: doc_overwrite_no_versions")
 
-def test_permanent_admin_token():
-    payload, error = verify_any_login_token(Config.PERMANENT_ADMIN_TOKEN)
+def test_signed_login_token():
+    payload, error = verify_login_token(issue_login_token('admin'))
     assert error is None
-    assert payload['username'] == Config.PERMANENT_ADMIN_USERNAME
-    assert payload['source'] == 'permanent'
-    print("PASS: permanent_admin_token")
+    assert payload['username'] == 'admin'
+    assert payload['source'] == 'signed'
+    print("PASS: signed_login_token")
+
+def test_cli_token_emits_valid_token():
+    token = io.StringIO()
+    original_resolve_root = md_reviewctl.resolve_root
+    original_token_secret = os.environ.get('TOKEN_LOGIN_SECRET')
+    try:
+        md_reviewctl.resolve_root = lambda: os.path.dirname(__file__)
+        os.environ['TOKEN_LOGIN_SECRET'] = Config.TOKEN_LOGIN_SECRET
+        with redirect_stdout(token):
+            md_reviewctl.cmd_token(type('Args', (), {'username': None})())
+    finally:
+        md_reviewctl.resolve_root = original_resolve_root
+        if original_token_secret is None:
+            os.environ.pop('TOKEN_LOGIN_SECRET', None)
+        else:
+            os.environ['TOKEN_LOGIN_SECRET'] = original_token_secret
+    payload, error = verify_login_token(token.getvalue().strip())
+    assert error is None
+    assert payload['username']
+    print("PASS: cli_token_emits_valid_token")
+
+def test_cli_token_rejects_other_user_without_root():
+    original_current_username = md_reviewctl.current_username
+    original_is_root = md_reviewctl.is_root
+    original_validate_local_user = md_reviewctl.validate_local_user
+    try:
+        md_reviewctl.current_username = lambda: 'alice'
+        md_reviewctl.is_root = lambda: False
+        md_reviewctl.validate_local_user = lambda username: None
+        try:
+            md_reviewctl.cmd_token(type('Args', (), {'username': 'bob'})())
+            raise AssertionError('expected SystemExit')
+        except SystemExit as exc:
+            assert str(exc) == 'Only root may generate a token for another user'
+    finally:
+        md_reviewctl.current_username = original_current_username
+        md_reviewctl.is_root = original_is_root
+        md_reviewctl.validate_local_user = original_validate_local_user
+    print("PASS: cli_token_rejects_other_user_without_root")
 
 def test_diff_add_change_del():
     base = "a\nb\nc\n"
@@ -157,7 +203,8 @@ def test_comment_anchor_offsets_schema():
 
 def main():
     tests = [test_init_db, test_ensure_user, test_doc_crud, test_doc_overwrite,
-             test_permanent_admin_token,
+             test_signed_login_token, test_cli_token_emits_valid_token,
+             test_cli_token_rejects_other_user_without_root,
              test_diff_add_change_del, test_diff_empty_base, test_diff_word_segments,
              test_diff_punctuation_segments, test_diff_whitespace_segments,
              test_diff_surplus_lines, test_md_headings,

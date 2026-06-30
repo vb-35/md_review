@@ -380,13 +380,14 @@ try:
     print("PASS: bootstrap_token_login")
 
     client.post('/api/auth/logout')
-    r = client.post('/api/auth/token-login', json={'token': Config.PERMANENT_ADMIN_TOKEN})
+    token = issue_login_token('admin')
+    r = client.post('/api/auth/token-login', json={'token': token})
     assert r.status_code == 200
-    assert r.get_json()['user']['username'] == Config.PERMANENT_ADMIN_USERNAME
+    assert r.get_json()['user']['username'] == 'admin'
     r = client.get('/api/auth/me')
     assert r.status_code == 200
-    assert r.get_json()['username'] == Config.PERMANENT_ADMIN_USERNAME
-    print("PASS: permanent_token_login")
+    assert r.get_json()['username'] == 'admin'
+    print("PASS: signed_token_login")
 
     client.post('/api/auth/logout')
     r = client.post('/api/auth/token-login', json={'token': 'not-a-real-token'})
