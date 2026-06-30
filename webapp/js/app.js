@@ -169,11 +169,7 @@ function readFileAsText(file) {
 
 function insertAtCursor(text) {
   const editor = $('#editor');
-  const start = editor.selectionStart;
-  const end = editor.selectionEnd;
-  const value = editor.value;
-  editor.value = `${value.slice(0, start)}${text}${value.slice(end)}`;
-  editor.selectionStart = editor.selectionEnd = start + text.length;
+  editor.setRangeText(text, editor.selectionStart, editor.selectionEnd, 'end');
   editor.focus();
   editing = true;
   updateEditorPermissions();
@@ -1355,10 +1351,7 @@ $('#editor').addEventListener('keydown', (event) => {
   if (event.key === 'Tab' && !$('#editor').readOnly) {
     event.preventDefault();
     const editor = $('#editor');
-    const start = editor.selectionStart;
-    const end = editor.selectionEnd;
-    editor.value = `${editor.value.substring(0, start)}    ${editor.value.substring(end)}`;
-    editor.selectionStart = editor.selectionEnd = start + 4;
+    editor.setRangeText('    ', editor.selectionStart, editor.selectionEnd, 'end');
     editing = true;
     updateEditorPermissions();
     schedulePreview();
