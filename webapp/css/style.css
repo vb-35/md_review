@@ -512,6 +512,9 @@ select {
 }
 
 .pane-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   padding: 10px 14px;
   font-size: 12px;
   font-weight: 700;
@@ -520,6 +523,12 @@ select {
   color: var(--fg-dim);
   background: var(--editor-header-bg);
   border-bottom: 1px solid var(--border);
+}
+
+.pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 #editor {
@@ -611,6 +620,11 @@ select {
   padding: 8px 16px;
   margin: 12px 0;
   color: var(--fg-dim);
+}
+
+.markdown-body img {
+  max-width: 100%;
+  height: auto;
 }
 
 .markdown-body table {

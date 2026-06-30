@@ -118,6 +118,23 @@ async function api(method, path, body) {
   return data;
 }
 
+async function uploadDocumentAsset(docId, file) {
+  const body = new FormData();
+  body.append('file', file);
+  const res = await fetch(`${API}/documents/${docId}/assets`, {
+    method: 'POST',
+    headers: currentUser ? { 'X-User-Id': currentUser.id } : {},
+    credentials: 'include',
+    body
+  });
+  const contentType = res.headers.get('content-type') || '';
+  const data = contentType.includes('application/json')
+    ? await res.json()
+    : { error: 'Expected JSON response from asset upload' };
+  if (!res.ok) throw new Error(data.error || 'Upload failed');
+  return data;
+}
+
 function canEditCurrentDoc() {
   return !!currentDoc && ['owner', 'editor'].includes(currentDoc.accessRole);
 }
@@ -173,6 +190,18 @@ function readFileAsText(file) {
     reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
     reader.readAsText(file);
   });
+}
+
+function insertAtCursor(text) {
+  const editor = $('#editor');
+  const start = editor.selectionStart;
+  const end = editor.selectionEnd;
+  const value = editor.value;
+  editor.value = `${value.slice(0, start)}${text}${value.slice(end)}`;
+  editor.selectionStart = editor.selectionEnd = start + text.length;
+  editor.focus();
+  editing = true;
+  updateHeader();
 }
 
 function titleFromFilename(filename) {
@@ -277,9 +306,11 @@ function updateEditorPermissions() {
   const canEdit = canEditCurrentDoc();
   const saveEnabled = canEdit && holdsCurrentLock() && editing;
   const lockDisabled = !currentDoc || !canEdit || (!!currentDoc.lockOwnerId && !holdsCurrentLock());
+  const uploadDisabled = !currentDoc || !canEdit || !holdsCurrentLock();
 
   $('#btn-save').disabled = !saveEnabled;
   $('#btn-lock').disabled = lockDisabled;
+  $('#btn-upload-image').disabled = uploadDisabled;
 
   if (!currentDoc || !canEdit) {
     $('#btn-lock').textContent = 'Lock';
@@ -1564,6 +1595,27 @@ $('#editor').addEventListener('keydown', (e) => {
 });
 
 $('#btn-save').addEventListener('click', saveDoc);
+
+$('#btn-upload-image').addEventListener('click', () => {
+  if (!currentDoc || !canEditCurrentDoc() || !holdsCurrentLock()) return;
+  $('#upload-image-input').click();
+});
+
+$('#upload-image-input').addEventListener('change', async (e) => {
+  const input = e.target;
+  const [file] = input.files || [];
+  input.value = '';
+  if (!file || !currentDoc || !holdsCurrentLock()) return;
+
+  try {
+    const uploaded = await uploadDocumentAsset(currentDoc.id, file);
+    const markdown = `![${uploaded.filename}](${uploaded.url})`;
+    insertAtCursor(markdown);
+    renderPreview();
+  } catch (err) {
+    alert(`Upload failed: ${err.message}`);
+  }
+});
 
 $('#btn-lock').addEventListener('click', async () => {
   if (!currentDoc) return;

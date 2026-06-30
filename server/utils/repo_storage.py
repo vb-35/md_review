@@ -56,6 +56,10 @@ def get_documents_root():
     return (get_repo_root() / documents_dir).resolve()
 
 
+def get_assets_root():
+    return (get_repo_root() / '.md-review' / 'assets').resolve()
+
+
 def normalize_repo_relative_path(file_path):
     if not file_path:
         raise ValueError('filePath required')
@@ -103,6 +107,17 @@ def default_repo_path(doc_id, title):
     root = get_documents_root()
     rel_path = root.relative_to(get_repo_root()) / filename
     return rel_path.as_posix()
+
+
+def asset_dir_for_document(doc_id):
+    return (get_assets_root() / doc_id).resolve()
+
+
+def sanitize_asset_filename(filename):
+    original = Path((filename or '').strip()).name
+    stem = re.sub(r'[^A-Za-z0-9._-]+', '-', Path(original).stem).strip('._-') or 'image'
+    suffix = re.sub(r'[^A-Za-z0-9.]+', '', Path(original).suffix)[:16].lower()
+    return f'{stem}{suffix}'
 
 
 def get_comment_store_path(file_path, commit_sha):

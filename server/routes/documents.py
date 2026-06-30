@@ -1,14 +1,23 @@
 import uuid
 import json
+import os
 from datetime import datetime, timezone
-from flask import Blueprint, request, jsonify, session
+from flask import Blueprint, request, jsonify, session, send_from_directory, current_app
 from models import get_db, get_document_for_user
 from utils.renderer import markdown_to_html
 from utils.diff import compute_diff
-from utils.repo_storage import default_repo_path, get_head_commit, read_repo_file, write_repo_file
+from utils.repo_storage import (
+    default_repo_path,
+    get_head_commit,
+    read_repo_file,
+    write_repo_file,
+    asset_dir_for_document,
+    sanitize_asset_filename,
+)
 
 doc_bp = Blueprint('documents', __name__)
 SHARE_ROLES = {'viewer', 'editor'}
+ALLOWED_ASSET_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg'}
 
 def require_auth(f):
     from functools import wraps
@@ -70,6 +79,27 @@ def ensure_document_repo_path(doc):
     conn.commit()
     doc['repo_path'] = repo_path
     return repo_path
+
+
+def asset_url(doc_id, filename):
+    base_path = current_app.config.get('APP_BASE_PATH', '')
+    return f"{base_path}/api/documents/{doc_id}/assets/{filename}"
+
+
+def next_asset_path(doc_id, filename):
+    asset_dir = asset_dir_for_document(doc_id)
+    asset_dir.mkdir(parents=True, exist_ok=True)
+    safe_name = sanitize_asset_filename(filename)
+    stem, ext = os.path.splitext(safe_name)
+    if ext.lower() not in ALLOWED_ASSET_EXTENSIONS:
+        raise ValueError('Only image and SVG uploads are allowed')
+
+    candidate = safe_name
+    counter = 1
+    while (asset_dir / candidate).exists():
+        candidate = f'{stem}-{counter}{ext}'
+        counter += 1
+    return asset_dir, candidate
 
 @doc_bp.route('/documents', methods=['GET'])
 @require_auth
@@ -359,3 +389,45 @@ def delete_share(doc_id, user_id):
     if deleted.rowcount == 0:
         return jsonify({'error': 'Share not found'}), 404
     return jsonify({'ok': True})
+
+
+@doc_bp.route('/documents/<doc_id>/assets', methods=['POST'])
+@require_auth
+def upload_document_asset(doc_id):
+    uid = session['user_id']
+    row, error = get_accessible_document_or_404(doc_id, uid)
+    if error:
+        return error
+    permission_error = require_edit_access(row)
+    if permission_error:
+        return permission_error
+
+    upload = request.files.get('file')
+    if not upload or not upload.filename:
+        return jsonify({'error': 'file required'}), 400
+
+    try:
+        asset_dir, filename = next_asset_path(doc_id, upload.filename)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    upload.save(asset_dir / filename)
+    return jsonify({
+        'filename': filename,
+        'url': asset_url(doc_id, filename),
+    }), 201
+
+
+@doc_bp.route('/documents/<doc_id>/assets/<path:filename>', methods=['GET'])
+@require_auth
+def get_document_asset(doc_id, filename):
+    row, error = get_accessible_document_or_404(doc_id, session['user_id'])
+    if error:
+        return error
+
+    asset_dir = asset_dir_for_document(doc_id)
+    safe_name = sanitize_asset_filename(filename)
+    asset_path = asset_dir / safe_name
+    if not asset_path.is_file():
+        return jsonify({'error': 'Asset not found'}), 404
+    return send_from_directory(asset_dir, safe_name)

@@ -138,7 +138,13 @@
     <main id="editor-screen" class="hidden">
       <div id="split-view">
         <div id="editor-pane">
-          <div class="pane-header">Source</div>
+          <div class="pane-header">
+            <span>Source</span>
+            <div class="pane-actions">
+              <input type="file" id="upload-image-input" class="hidden" accept="image/*,.svg">
+              <button id="btn-upload-image" type="button">Upload Image</button>
+            </div>
+          </div>
           <textarea id="editor" spellcheck="false"></textarea>
         </div>
         <div id="preview-pane">

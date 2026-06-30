@@ -11,6 +11,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
 from config import Config
 Config.DATABASE = os.path.join(tempfile.mkdtemp(prefix='md_review_test_app_'), 'test.db')
 from models import get_db, init_db, ensure_user
+from run import create_app
 from utils.diff import compute_diff
 from utils.login_tokens import issue_login_token, verify_login_token
 from utils.renderer import markdown_to_html
@@ -201,6 +202,73 @@ def test_comment_anchor_offsets_schema():
     assert 'selected_text' in cols
     print("PASS: comment_anchor_offsets_schema")
 
+
+def test_document_asset_upload_and_access():
+    Config.REPO_ROOT = tempfile.mkdtemp(prefix='md_review_repo_')
+    Config.SESSION_FILE_DIR = tempfile.mkdtemp(prefix='md_review_session_')
+    client = create_app().test_client()
+    conn = get_db()
+    owner_id = ensure_user(f'owner-{uuid.uuid4().hex[:8]}')
+    viewer_id = ensure_user(f'viewer-{uuid.uuid4().hex[:8]}')
+    outsider_id = ensure_user(f'outsider-{uuid.uuid4().hex[:8]}')
+
+    with client.session_transaction() as sess:
+        sess['user_id'] = owner_id
+    response = client.post('/api/documents', json={'title': 'Asset Doc', 'markdown': 'Hello'})
+    assert response.status_code == 201
+    document = response.get_json()
+    doc_id = document['id']
+
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        "INSERT INTO document_shares (document_id, user_id, role, shared_by, created_at) VALUES (?, ?, ?, ?, ?)",
+        (doc_id, viewer_id, 'viewer', owner_id, now)
+    )
+    conn.commit()
+
+    upload_response = client.post(
+        f'/api/documents/{doc_id}/assets',
+        data={'file': (io.BytesIO(b'<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>'), 'diagram.svg')},
+        content_type='multipart/form-data'
+    )
+    assert upload_response.status_code == 201
+    uploaded = upload_response.get_json()
+    assert uploaded['filename'] == 'diagram.svg'
+    assert uploaded['url'] == f'/api/documents/{doc_id}/assets/diagram.svg'
+
+    duplicate_response = client.post(
+        f'/api/documents/{doc_id}/assets',
+        data={'file': (io.BytesIO(b'<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>'), 'diagram.svg')},
+        content_type='multipart/form-data'
+    )
+    assert duplicate_response.status_code == 201
+    assert duplicate_response.get_json()['filename'] == 'diagram-1.svg'
+
+    asset_dir = os.path.join(Config.REPO_ROOT, '.md-review', 'assets', doc_id)
+    assert os.path.exists(os.path.join(asset_dir, 'diagram.svg'))
+    assert os.path.exists(os.path.join(asset_dir, 'diagram-1.svg'))
+
+    with client.session_transaction() as sess:
+        sess['user_id'] = viewer_id
+    get_response = client.get(uploaded['url'])
+    assert get_response.status_code == 200
+    assert get_response.mimetype == 'image/svg+xml'
+
+    with client.session_transaction() as sess:
+        sess['user_id'] = outsider_id
+    denied_response = client.get(uploaded['url'])
+    assert denied_response.status_code == 404
+
+    with client.session_transaction() as sess:
+        sess['user_id'] = owner_id
+    reject_response = client.post(
+        f'/api/documents/{doc_id}/assets',
+        data={'file': (io.BytesIO(b'not an image'), 'notes.txt')},
+        content_type='multipart/form-data'
+    )
+    assert reject_response.status_code == 400
+    print("PASS: document_asset_upload_and_access")
+
 def main():
     tests = [test_init_db, test_ensure_user, test_doc_crud, test_doc_overwrite,
              test_signed_login_token, test_cli_token_emits_valid_token,
@@ -209,7 +277,7 @@ def main():
              test_diff_punctuation_segments, test_diff_whitespace_segments,
              test_diff_surplus_lines, test_md_headings,
              test_md_list, test_md_code, test_md_inline_math, test_md_table,
-             test_comment_anchor_offsets_schema]
+             test_comment_anchor_offsets_schema, test_document_asset_upload_and_access]
     ok = 0; fail = 0
     with app.app_context():
         for t in tests:
