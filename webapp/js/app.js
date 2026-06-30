@@ -8,6 +8,11 @@ const API = (() => {
   return `${normalized}/api`;
 })();
 
+const SETTINGS_KEY_THEME = 'md-review.theme';
+const SETTINGS_KEY_SYNC_VIEW = 'md-review.sync-view';
+const HIGHLIGHT_THEME_DARK = 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css';
+const HIGHLIGHT_THEME_LIGHT = 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css';
+
 let currentUser = null;
 let currentDoc = null;
 let docs = [];
@@ -25,6 +30,8 @@ let currentView = 'dashboard';
 let previewTimer = null;
 let mathPlaceholders = {};
 let placeholderCounter = 0;
+let settings = loadSettings();
+let syncingScroll = false;
 
 function getLineNumberAtOffset(text, offset) {
   let lineNumber = 1;
@@ -35,6 +42,59 @@ function getLineNumberAtOffset(text, offset) {
 }
 
 const $ = (sel) => document.querySelector(sel);
+
+function loadSettings() {
+  const theme = localStorage.getItem(SETTINGS_KEY_THEME);
+  return {
+    theme: theme === 'light' ? 'light' : 'dark',
+    syncView: localStorage.getItem(SETTINGS_KEY_SYNC_VIEW) === 'true'
+  };
+}
+
+function saveSettings() {
+  localStorage.setItem(SETTINGS_KEY_THEME, settings.theme);
+  localStorage.setItem(SETTINGS_KEY_SYNC_VIEW, String(settings.syncView));
+}
+
+function applyTheme(theme) {
+  document.body.dataset.theme = theme;
+  const highlightTheme = $('#highlight-theme');
+  if (highlightTheme) {
+    highlightTheme.href = theme === 'light' ? HIGHLIGHT_THEME_LIGHT : HIGHLIGHT_THEME_DARK;
+  }
+}
+
+applyTheme(settings.theme);
+
+function applySettings() {
+  applyTheme(settings.theme);
+  const syncToggle = $('#toggle-sync-view');
+  if (syncToggle) syncToggle.checked = settings.syncView;
+  document.querySelectorAll('input[name="theme"]').forEach((input) => {
+    input.checked = input.value === settings.theme;
+  });
+}
+
+function toggleSettingsPanel(forceOpen) {
+  const panel = $('#settings-panel');
+  const button = $('#btn-settings');
+  if (!panel || !button) return;
+  const shouldOpen = typeof forceOpen === 'boolean' ? forceOpen : panel.classList.contains('hidden');
+  panel.classList.toggle('hidden', !shouldOpen);
+  button.setAttribute('aria-expanded', shouldOpen ? 'true' : 'false');
+}
+
+function syncScroll(source, target) {
+  if (!settings.syncView || syncingScroll) return;
+  const sourceRange = source.scrollHeight - source.clientHeight;
+  const targetRange = target.scrollHeight - target.clientHeight;
+  const ratio = sourceRange > 0 ? source.scrollTop / sourceRange : 0;
+  syncingScroll = true;
+  target.scrollTop = targetRange > 0 ? ratio * targetRange : 0;
+  requestAnimationFrame(() => {
+    syncingScroll = false;
+  });
+}
 
 function headers() {
   return {
@@ -212,23 +272,21 @@ function updateEditorPermissions() {
 }
 
 function consumeTokenFromUrl() {
+  return new URL(window.location.href).searchParams.get('token');
+}
+
+function clearTokenFromUrl() {
   const url = new URL(window.location.href);
-  const token = url.searchParams.get('token');
-  if (!token) return null;
+  if (!url.searchParams.has('token')) return;
   url.searchParams.delete('token');
   history.replaceState({}, document.title, url.pathname + url.search + url.hash);
-  return token;
 }
 
-async function loginWithToken(token) {
-  const response = await api('POST', '/auth/token-login', { token });
-  authMode = response.authMode || authMode;
-  passwordLoginEnabled = response.passwordLoginEnabled !== false;
-  return response.user || response;
-}
-
-async function bootstrapAuth() {
-  const res = await fetch(API + '/auth/bootstrap', {
+async function bootstrapAuth(token = null) {
+  const path = token
+    ? `${API}/auth/bootstrap?token=${encodeURIComponent(token)}`
+    : `${API}/auth/bootstrap`;
+  const res = await fetch(path, {
     method: 'GET',
     headers: headers(),
     credentials: 'include'
@@ -236,7 +294,7 @@ async function bootstrapAuth() {
   const contentType = res.headers.get('content-type') || '';
   const data = contentType.includes('application/json')
     ? await res.json()
-    : { error: `Expected JSON from ${API + '/auth/bootstrap'}, got ${contentType || 'non-JSON response'}` };
+    : { error: `Expected JSON from ${path}, got ${contentType || 'non-JSON response'}` };
   authMode = data.authMode || null;
   passwordLoginEnabled = data.passwordLoginEnabled !== false;
   if (!res.ok) {
@@ -251,7 +309,8 @@ async function bootstrapAuth() {
 async function initAuth() {
   const loginToken = consumeTokenFromUrl();
   try {
-    currentUser = loginToken ? await loginWithToken(loginToken) : await bootstrapAuth();
+    currentUser = await bootstrapAuth(loginToken);
+    clearTokenFromUrl();
     showTopbar();
     showDashboard();
     await loadDocs();
@@ -1119,6 +1178,45 @@ function initPreviewClickNavigation() {
   });
 }
 
+function initSettings() {
+  applySettings();
+
+  $('#btn-settings').addEventListener('click', (event) => {
+    event.stopPropagation();
+    toggleSettingsPanel();
+  });
+
+  document.querySelectorAll('input[name="theme"]').forEach((input) => {
+    input.addEventListener('change', () => {
+      settings.theme = input.value === 'light' ? 'light' : 'dark';
+      saveSettings();
+      applySettings();
+    });
+  });
+
+  $('#toggle-sync-view').addEventListener('change', (event) => {
+    settings.syncView = event.target.checked;
+    saveSettings();
+  });
+
+  document.addEventListener('click', (event) => {
+    const panel = $('#settings-panel');
+    const shell = document.querySelector('.settings-shell');
+    if (panel.classList.contains('hidden')) return;
+    if (!shell.contains(event.target)) toggleSettingsPanel(false);
+  });
+}
+
+function initScrollSync() {
+  $('#editor').addEventListener('scroll', () => {
+    syncScroll($('#editor'), $('#preview'));
+  });
+
+  $('#preview').addEventListener('scroll', () => {
+    syncScroll($('#preview'), $('#editor'));
+  });
+}
+
 function highlightThreadInPreview(threadId) {
   const thread = threads.find((t) => t.id === threadId);
   if (!thread) return;
@@ -1489,4 +1587,6 @@ $('#thread-body').addEventListener('keydown', (e) => {
 
 initSelectionListener();
 initPreviewClickNavigation();
+initSettings();
+initScrollSync();
 initAuth();

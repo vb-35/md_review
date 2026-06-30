@@ -23,6 +23,17 @@ def login_user(username):
     session['username'] = username
     return {'id': uid, 'username': username}
 
+def login_user_from_token(token):
+    token_payload, error = verify_any_login_token(token)
+    if error or not token_payload:
+        return None, error
+
+    username = normalize_trusted_username(token_payload['username'])
+    if not username:
+        return None, 'Invalid login token'
+
+    return login_user(username), None
+
 def is_local_request():
     remote_addr = (request.remote_addr or '').strip()
     if not remote_addr:
@@ -74,6 +85,21 @@ def bootstrap():
             'passwordLoginEnabled': is_password_login_enabled()
         })
 
+    token = (request.args.get('token') or '').strip()
+    if token:
+        user, error = login_user_from_token(token)
+        if user:
+            return jsonify({
+                'user': user,
+                'authMode': Config.AUTH_MODE,
+                'passwordLoginEnabled': is_password_login_enabled()
+            })
+        return jsonify({
+            'error': error or 'Invalid login token',
+            'authMode': Config.AUTH_MODE,
+            'passwordLoginEnabled': is_password_login_enabled()
+        }), 401
+
     username, error = get_trusted_username()
     if username:
         return jsonify({
@@ -94,16 +120,12 @@ def token_login():
     if not data or 'token' not in data:
         return jsonify({'error': 'token required'}), 400
 
-    token_payload, error = verify_any_login_token(data['token'])
-    if error or not token_payload:
-        return jsonify({'error': error}), 401
-
-    username = normalize_trusted_username(token_payload['username'])
-    if not username:
-        return jsonify({'error': 'Invalid login token'}), 401
+    user, error = login_user_from_token(data['token'])
+    if not user:
+        return jsonify({'error': error or 'Invalid login token'}), 401
 
     return jsonify({
-        'user': login_user(username),
+        'user': user,
         'authMode': Config.AUTH_MODE,
         'passwordLoginEnabled': is_password_login_enabled()
     })

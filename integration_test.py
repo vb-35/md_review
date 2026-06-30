@@ -286,6 +286,16 @@ try:
     assert r.get_json()['username'] == 'carol'
     print("PASS: token_login")
 
+    token_client = app.test_client()
+    token = issue_login_token('dave')
+    r = token_client.get(f'/api/auth/bootstrap?token={token}')
+    assert r.status_code == 200
+    assert r.get_json()['user']['username'] == 'dave'
+    r = token_client.get('/api/auth/me')
+    assert r.status_code == 200
+    assert r.get_json()['username'] == 'dave'
+    print("PASS: bootstrap_token_login")
+
     client.post('/api/auth/logout')
     r = client.post('/api/auth/token-login', json={'token': Config.PERMANENT_ADMIN_TOKEN})
     assert r.status_code == 200
