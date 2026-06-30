@@ -166,6 +166,20 @@ function esc(s) {
   return d.innerHTML;
 }
 
+function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+    reader.onerror = () => reject(reader.error || new Error('Failed to read file'));
+    reader.readAsText(file);
+  });
+}
+
+function titleFromFilename(filename) {
+  const base = (filename || '').replace(/\.[^/.]+$/, '').trim();
+  return base || 'Imported Document';
+}
+
 function closePanels() {
   $('#review-panel').classList.add('hidden');
   $('#comments-panel').classList.add('hidden');
@@ -1465,6 +1479,29 @@ $('#btn-new-doc').addEventListener('click', async () => {
   const doc = await api('POST', '/documents', { title, markdown: `# ${title}\n\n` });
   await loadDocs();
   await selectDashboardDoc(doc.id);
+});
+
+$('#btn-import-doc').addEventListener('click', () => {
+  $('#import-markdown-input').click();
+});
+
+$('#import-markdown-input').addEventListener('change', async (e) => {
+  const input = e.target;
+  const [file] = input.files || [];
+  input.value = '';
+  if (!file) return;
+
+  try {
+    const markdown = await readFileAsText(file);
+    const doc = await api('POST', '/documents', {
+      title: titleFromFilename(file.name),
+      markdown
+    });
+    await loadDocs();
+    await selectDashboardDoc(doc.id);
+  } catch (err) {
+    alert(`Import failed: ${err.message}`);
+  }
 });
 
 $('#btn-open-doc').addEventListener('click', async () => {

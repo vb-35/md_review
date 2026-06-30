@@ -62,7 +62,16 @@
               <h2>Documents</h2>
               <p>Browse owned and shared documents.</p>
             </div>
-            <button id="btn-new-doc" class="primary">+ New Document</button>
+            <div class="dashboard-actions">
+              <input
+                type="file"
+                id="import-markdown-input"
+                class="hidden"
+                accept=".md,.markdown,text/markdown,text/plain"
+              >
+              <button id="btn-import-doc" type="button">Import Markdown</button>
+              <button id="btn-new-doc" class="primary">+ New Document</button>
+            </div>
           </div>
 
           <div class="dashboard-section">

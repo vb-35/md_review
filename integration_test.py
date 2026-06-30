@@ -102,6 +102,20 @@ try:
     assert r.get_json()['markdown'] == '# Updated'
     print("PASS: update_doc")
 
+    imported_markdown = '# Imported\n\n- one\n- two\n'
+    r = client.post('/api/documents', json={'title': 'imported-notes', 'markdown': imported_markdown})
+    assert r.status_code == 201
+    imported_doc = r.get_json()
+    assert imported_doc['title'] == 'imported-notes'
+    assert imported_doc['markdown'] == imported_markdown
+    with app.app_context():
+        imported_version_count = get_db().execute(
+            "SELECT COUNT(*) FROM document_versions WHERE document_id = ?",
+            (imported_doc['id'],)
+        ).fetchone()[0]
+        assert imported_version_count == 1
+    print("PASS: create_imported_doc")
+
     with app.app_context():
         version_count = get_db().execute(
             "SELECT COUNT(*) FROM document_versions WHERE document_id = ?",
