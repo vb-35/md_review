@@ -2,6 +2,7 @@
 venv/
 __pycache__/
 *.pyc
+.md-review/
 
 data/
 flask_session/
