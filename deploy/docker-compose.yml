@@ -9,7 +9,11 @@ services:
       SECRET_KEY: change-me
       DATABASE_PATH: /data/md_review.db
       SESSION_FILE_DIR: /data/flask_session
-      LOCAL_AUTH: "on"
+      AUTH_MODE: trusted_user
+      TRUSTED_USER_HEADER: X-Remote-User
+      TRUSTED_USER_LOCAL_ONLY: "on"
+      TOKEN_LOGIN_MAX_AGE_SECONDS: "120"
+      LOCAL_AUTH: "off"
     volumes:
       - md-review-data:/data
     restart: unless-stopped

@@ -1,6 +1,9 @@
 /* ===== API Helpers ===== */
 const API = (() => {
-  const path = window.location.pathname;
+  let path = window.location.pathname || '/';
+  if (path.endsWith('/index.html')) {
+    path = path.slice(0, -'/index.html'.length) || '/';
+  }
   if (path === '/' || path === '') return '/api';
   const normalized = path.endsWith('/') ? path.slice(0, -1) : path;
   return `${normalized}/api`;
@@ -17,7 +20,10 @@ async function api(method, path, body) {
     credentials: 'include',
     body: body ? JSON.stringify(body) : undefined
   });
-  const data = await res.json();
+  const contentType = res.headers.get('content-type') || '';
+  const data = contentType.includes('application/json')
+    ? await res.json()
+    : { error: `Expected JSON from ${API + path}, got ${contentType || 'non-JSON response'}` };
   if (!res.ok) throw new Error(data.error || 'Request failed');
   return data;
 }
@@ -32,6 +38,8 @@ let selectedHeadId = null;
 let threads = [];
 let editing = false;
 let showResolved = false;
+let authMode = null;
+let passwordLoginEnabled = true;
 
 /* ===== DOM ===== */
 const $ = (sel) => document.querySelector(sel);
@@ -40,7 +48,8 @@ const $$ = (sel) => document.querySelectorAll(sel);
 /* ===== Auth ===== */
 async function login(username, password) {
   try {
-    currentUser = await api('POST', '/auth/login', { username, password });
+    const response = await api('POST', '/auth/login', { username, password });
+    currentUser = response.user || response;
     showEditor();
     await loadDocs();
   } catch (e) {
@@ -54,10 +63,12 @@ async function logout() {
   try { await api('POST', '/auth/logout'); } catch {}
   currentUser = null;
   currentDoc = null;
+  authMode = null;
+  passwordLoginEnabled = true;
   $('#topbar').classList.add('hidden');
   $('#editor-screen').classList.add('hidden');
-  $('#login-screen').classList.remove('hidden');
   $('#doc-sidebar').classList.add('hidden');
+  await initAuth();
 }
 
 $('#login-form').addEventListener('submit', async (e) => {
@@ -77,6 +88,87 @@ function showEditor() {
   $('#editor-screen').classList.remove('hidden');
   $('#topbar').classList.remove('hidden');
   $('#user-display').textContent = currentUser.username;
+}
+
+function showLoginScreen(message = '') {
+  const hint = $('#login-hint');
+  const form = $('#login-form');
+  const error = $('#login-error');
+
+  $('#topbar').classList.add('hidden');
+  $('#editor-screen').classList.add('hidden');
+  $('#login-screen').classList.remove('hidden');
+
+  if (passwordLoginEnabled) {
+    form.classList.remove('hidden');
+    if (message) {
+      hint.textContent = message;
+      hint.classList.remove('hidden');
+    } else {
+      hint.classList.add('hidden');
+      hint.textContent = '';
+    }
+  } else {
+    form.classList.add('hidden');
+    hint.textContent = message || 'Waiting for a trusted upstream user identity.';
+    hint.classList.remove('hidden');
+  }
+
+  error.classList.add('hidden');
+  error.textContent = '';
+}
+
+function consumeTokenFromUrl() {
+  const url = new URL(window.location.href);
+  const token = url.searchParams.get('token');
+  if (!token) return null;
+  url.searchParams.delete('token');
+  history.replaceState({}, document.title, url.pathname + url.search + url.hash);
+  return token;
+}
+
+async function loginWithToken(token) {
+  const response = await api('POST', '/auth/token-login', { token });
+  authMode = response.authMode || authMode;
+  passwordLoginEnabled = response.passwordLoginEnabled !== false;
+  return response.user || response;
+}
+
+async function bootstrapAuth() {
+  const res = await fetch(API + '/auth/bootstrap', {
+    method: 'GET',
+    headers: headers(),
+    credentials: 'include'
+  });
+  const contentType = res.headers.get('content-type') || '';
+  const data = contentType.includes('application/json')
+    ? await res.json()
+    : { error: `Expected JSON from ${API + '/auth/bootstrap'}, got ${contentType || 'non-JSON response'}` };
+  authMode = data.authMode || null;
+  passwordLoginEnabled = data.passwordLoginEnabled !== false;
+  if (!res.ok) {
+    const error = new Error(data.error || 'Authentication bootstrap failed');
+    error.authMode = authMode;
+    error.passwordLoginEnabled = passwordLoginEnabled;
+    throw error;
+  }
+  return data.user || data;
+}
+
+async function initAuth() {
+  const loginToken = consumeTokenFromUrl();
+  try {
+    if (loginToken) {
+      currentUser = await loginWithToken(loginToken);
+    } else {
+      currentUser = await bootstrapAuth();
+    }
+    showEditor();
+    await loadDocs();
+  } catch (e) {
+    currentUser = null;
+    showLoginScreen(e.message);
+  }
 }
 
 function renderDocList() {
@@ -961,10 +1053,4 @@ function esc(s) {
 }
 
 /* ===== Init: Check Session ===== */
-(async () => {
-  try {
-    currentUser = await api('GET', '/auth/me');
-    showEditor();
-    await loadDocs();
-  } catch {}
-})();
+initAuth();

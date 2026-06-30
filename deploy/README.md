@@ -1,21 +1,8 @@
-## Server Deploy Without Docker
+## Server Usage
 
-This app runs directly with `gunicorn`. The frontend is bundled into the Flask app, so the same server process serves both the API and the web UI.
+This app runs directly with `gunicorn`. Use the scripts in `deploy/` to start it, check status, and stop it.
 
-### 1. Install Python
-
-On the server, install:
-
-```bash
-sudo apt update
-sudo apt install -y python3 python3-venv
-```
-
-### 2. Copy the project
-
-Copy this whole project directory to the server.
-
-### 3. Start the server
+### Run
 
 From the project root:
 
@@ -23,42 +10,29 @@ From the project root:
 bash deploy/deploy.sh
 ```
 
-Optional environment variables:
+What it does:
 
-```bash
-PORT=18080
-LOCAL_AUTH=off
-DATABASE_PATH=/absolute/path/to/md_review.db
-SESSION_FILE_DIR=/absolute/path/to/flask_session
-```
+- starts the Flask app in the background
+- prints the SSH tunnel command
+- prints a short-lived signed login URL for the current SSH user
 
-The script will:
-
-- create `.venv` if needed
-- install `server/requirements.txt`
-- store runtime data in `data/`
-- generate and reuse a private Flask session secret in `data/secret_key`
-- start `gunicorn` in the background
-
-### 4. Access it from your machine
-
-Use the same pattern that worked for `voicebox`: SSH port forwarding.
-
-From your local machine:
-
-```bash
-ssh -L 18080:127.0.0.1:18080 youruser@yourhost
-```
-
-Then open in your local browser:
+Typical output includes:
 
 ```text
-http://127.0.0.1:18080/
+SSH tunnel: ssh -L 18080:127.0.0.1:18080 youruser@yourhost
+Open this URL in the browser that is using your SSH tunnel:
+http://127.0.0.1:18080/?token=...
 ```
 
-This avoids needing firewall changes on the server.
+Open that printed URL in the browser that uses the tunnel. The token is exchanged for a normal session and then removed from the address bar.
 
-### 5. Check server status
+If you need another fresh login URL later:
+
+```bash
+bash deploy/print-login-url.sh
+```
+
+### Status
 
 ```bash
 bash deploy/status.sh
@@ -72,7 +46,7 @@ curl -I http://127.0.0.1:18080/
 curl -s http://127.0.0.1:18080/api/auth/me
 ```
 
-### 6. Stop it
+### Stop
 
 ```bash
 bash deploy/stop.sh
@@ -82,8 +56,5 @@ bash deploy/stop.sh
 
 - The default port is `18080`.
 - Logs are written to `data/server.log`.
-- The database defaults to `data/md_review.db`.
-- The secret key is used by Flask to sign session cookies. You do not need to set it manually unless you want to manage it yourself.
-- `deploy/status.sh` exits non-zero if the process is down or stale.
-- `LOCAL_AUTH=on` means any non-empty username/password is accepted. That is only suitable for a trusted LAN demo.
-- With `LOCAL_AUTH=off`, authentication expects Linux PAM to be available on the host.
+- The signed login URL is the intended way to carry the current SSH user into the browser session.
+- `deploy/deploy.sh` also prints the login URL when the server is already running.

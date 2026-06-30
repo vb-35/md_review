@@ -13,8 +13,25 @@ APP_BASE_PATH="${APP_BASE_PATH:-}"
 SECRET_FILE="${SECRET_FILE:-$ROOT_DIR/data/secret_key}"
 DATABASE_PATH="${DATABASE_PATH:-$ROOT_DIR/data/md_review.db}"
 SESSION_FILE_DIR="${SESSION_FILE_DIR:-$ROOT_DIR/data/flask_session}"
+AUTH_MODE="${AUTH_MODE:-trusted_user}"
+TRUSTED_USER_HEADER="${TRUSTED_USER_HEADER:-X-Remote-User}"
+TRUSTED_USER_LOCAL_ONLY="${TRUSTED_USER_LOCAL_ONLY:-on}"
 LOCAL_AUTH="${LOCAL_AUTH:-off}"
 PAM_SERVICE="${PAM_SERVICE:-login}"
+
+print_login_url() {
+  if [[ ! -x "$ROOT_DIR/deploy/print-login-url.sh" ]]; then
+    chmod +x "$ROOT_DIR/deploy/print-login-url.sh" 2>/dev/null || true
+  fi
+  if [[ -x "$ROOT_DIR/deploy/print-login-url.sh" ]]; then
+    APP_BASE_PATH="$APP_BASE_PATH" \
+    PORT="$PORT" \
+    LOGIN_HOST="127.0.0.1" \
+    TOKEN_LOGIN_SECRET="$TOKEN_LOGIN_SECRET" \
+    TOKEN_LOGIN_MAX_AGE_SECONDS="$TOKEN_LOGIN_MAX_AGE_SECONDS" \
+    "$ROOT_DIR/deploy/print-login-url.sh" || true
+  fi
+}
 
 mkdir -p "$ROOT_DIR/data" "$SESSION_FILE_DIR"
 
@@ -26,6 +43,9 @@ if [[ -z "${SECRET_KEY:-}" ]]; then
   SECRET_KEY="$(cat "$SECRET_FILE")"
 fi
 
+TOKEN_LOGIN_SECRET="${TOKEN_LOGIN_SECRET:-$SECRET_KEY}"
+TOKEN_LOGIN_MAX_AGE_SECONDS="${TOKEN_LOGIN_MAX_AGE_SECONDS:-120}"
+
 if [[ ! -d "$VENV_DIR" ]]; then
   python3 -m venv "$VENV_DIR"
 fi
@@ -33,24 +53,25 @@ fi
 "$VENV_DIR/bin/pip" install --upgrade pip >/dev/null
 "$VENV_DIR/bin/pip" install -r "$ROOT_DIR/server/requirements.txt"
 
-if ss -ltn "( sport = :${PORT} )" | tail -n +2 | grep -q .; then
-  echo "Port ${PORT} is already in use. Pick another one with PORT=..."
-  exit 1
-fi
-
 if [[ -f "$PID_FILE" ]]; then
   OLD_PID="$(cat "$PID_FILE" 2>/dev/null || true)"
   if [[ -n "${OLD_PID:-}" ]] && kill -0 "$OLD_PID" 2>/dev/null; then
     echo "md_review is already running with PID $OLD_PID"
     echo "SSH tunnel: ssh -L ${PORT}:127.0.0.1:${PORT} $(whoami)@$(hostname -f 2>/dev/null || hostname)"
     echo "Browser: http://127.0.0.1:${PORT}/"
+    print_login_url
     exit 0
   fi
   rm -f "$PID_FILE"
 fi
 
+if ss -ltn "( sport = :${PORT} )" | tail -n +2 | grep -q .; then
+  echo "Port ${PORT} is already in use. Pick another one with PORT=..."
+  exit 1
+fi
+
 cd "$ROOT_DIR/server"
-export SECRET_KEY DATABASE_PATH SESSION_FILE_DIR LOCAL_AUTH PAM_SERVICE APP_BASE_PATH
+export SECRET_KEY DATABASE_PATH SESSION_FILE_DIR AUTH_MODE TRUSTED_USER_HEADER TRUSTED_USER_LOCAL_ONLY TOKEN_LOGIN_SECRET TOKEN_LOGIN_MAX_AGE_SECONDS LOCAL_AUTH PAM_SERVICE APP_BASE_PATH
 
 "$VENV_DIR/bin/gunicorn" \
   --chdir "$ROOT_DIR/server" \
@@ -85,4 +106,5 @@ echo "md_review is running with PID $(cat "$PID_FILE")"
 echo "Web app: http://${SERVER_IP}:${PORT}${URL_PATH}"
 echo "SSH tunnel: ssh -L ${PORT}:127.0.0.1:${PORT} $(whoami)@$(hostname -f 2>/dev/null || hostname)"
 echo "Browser via tunnel: http://127.0.0.1:${PORT}${URL_PATH}"
+print_login_url
 echo "Logs: $LOG_FILE"

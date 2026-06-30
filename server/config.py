@@ -9,5 +9,10 @@ class Config:
     SESSION_COOKIE_HTTPONLY = True
     DATABASE = os.environ.get('DATABASE_PATH', 'md_review.db')
     PAM_SERVICE = os.environ.get('PAM_SERVICE', 'login')
+    AUTH_MODE = os.environ.get('AUTH_MODE', ('pam' if os.name == 'nt' else 'trusted_user')).strip().lower()
+    TRUSTED_USER_HEADER = os.environ.get('TRUSTED_USER_HEADER', 'X-Remote-User').strip() or 'X-Remote-User'
+    TRUSTED_USER_LOCAL_ONLY = os.environ.get('TRUSTED_USER_LOCAL_ONLY', 'on').strip().lower() in ('on', '1', 'true', 'yes')
+    TOKEN_LOGIN_SECRET = os.environ.get('TOKEN_LOGIN_SECRET', SECRET_KEY)
+    TOKEN_LOGIN_MAX_AGE_SECONDS = int(os.environ.get('TOKEN_LOGIN_MAX_AGE_SECONDS', '120'))
     # For local dev on non-Linux: accept any non-empty credentials
     LOCAL_AUTH = os.environ.get('LOCAL_AUTH', ('on' if os.name == 'nt' else 'off'))
