@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MD Review</title>
+  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css">
+</head>
+<body>
+  <div id="app">
+    <nav id="topbar" class="hidden">
+      <div class="topbar-left">
+        <button id="btn-menu" title="Documents">&#9776;</button>
+        <span id="doc-title"></span>
+        <span id="lock-badge" class="hidden badge badge-lock"></span>
+      </div>
+      <div class="topbar-actions">
+        <button id="btn-save" title="Save" disabled>&#10004; Save</button>
+        <button id="btn-lock" title="Lock/Unlock">&#128277; Lock</button>
+        <button id="btn-review" title="Start Review">&#9776; Review</button>
+        <button id="btn-threads" title="Comments">&#128172; Comments</button>
+        <span id="user-display"></span>
+        <button id="btn-logout">Logout</button>
+      </div>
+    </nav>
+
+    <div id="doc-sidebar" class="sidebar hidden">
+      <h3>Documents</h3>
+      <button id="btn-new-doc">+ New Document</button>
+      <ul id="doc-list"></ul>
+    </div>
+
+    <main id="login-screen">
+      <div class="login-box">
+        <h1>MD Review</h1>
+        <form id="login-form">
+          <input type="text" id="login-username" placeholder="Username" autocomplete="username" required>
+          <input type="password" id="login-password" placeholder="Password" autocomplete="current-password" required>
+          <button type="submit">Sign In</button>
+        </form>
+        <p id="login-error" class="error hidden"></p>
+      </div>
+    </main>
+
+    <main id="editor-screen" class="hidden">
+      <div id="split-view">
+        <div id="editor-pane">
+          <div class="pane-header">Source <span id="line-numbers"></span></div>
+          <textarea id="editor" spellcheck="false"></textarea>
+        </div>
+        <div id="preview-pane">
+          <div class="pane-header">Preview</div>
+          <div id="preview" class="markdown-body"></div>
+        </div>
+      </div>
+    </main>
+
+    <div id="review-panel" class="panel hidden">
+      <div class="panel-header">
+        <h3>Version History</h3>
+        <button id="btn-close-review" class="panel-close">&times;</button>
+      </div>
+      <div id="version-actions" style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;gap:6px;align-items:center;">
+        <button id="btn-select-base" style="font-size:11px;flex:1;">Select Base</button>
+        <button id="btn-select-head" style="font-size:11px;flex:1;">Select Head</button>
+        <button id="btn-compare" style="font-size:11px;">Diff</button>
+      </div>
+      <select id="version-select-base" style="margin:8px 12px 0;padding:4px 8px;font-size:11px;width:calc(100% - 24px);"></select>
+      <select id="version-select-head" style="margin:4px 12px 0;padding:4px 8px;font-size:11px;width:calc(100% - 24px);"></select>
+      <div id="diff-view"></div>
+      <div id="version-diff-actions" class="hidden" style="padding:10px 12px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;">
+        <button id="btn-revert" class="btn-reject" style="font-size:12px;">Revert to this version</button>
+        <span id="diff-meta" style="font-size:11px;color:var(--fg-dim);"></span>
+      </div>
+    </div>
+
+    <div id="comments-panel" class="panel hidden">
+      <div class="panel-header">
+        <h3>Comments</h3>
+        <div style="display:flex;gap:6px;align-items:center;">
+          <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;color:var(--fg-dim);">
+            <input type="checkbox" id="show-resolved"> Show resolved
+          </label>
+          <button id="btn-close-comments" class="panel-close">&times;</button>
+        </div>
+      </div>
+      <div id="thread-list"></div>
+      <div id="new-thread" class="new-thread">
+        <input type="text" id="thread-body" placeholder="New comment...">
+        <button id="btn-add-thread">Post</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/core.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/javascript.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/python.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/bash.min.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

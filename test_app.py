@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Tests for MD Review app."""
+import sys, os, json, uuid
+from datetime import datetime, timezone
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
+
+from config import Config
+Config.DATABASE = ':memory:'
+from models import get_db, init_db, ensure_user
+from utils.diff import compute_diff
+from utils.renderer import markdown_to_html
+
+def test_init_db():
+    db = init_db()
+    t = [r['name'] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
+    for name in ('users','documents','change_sets','comment_threads','comments','comment_anchors'):
+        assert name in t, f"{name} missing"
+    print("PASS: init_db")
+
+def test_ensure_user():
+    uid = ensure_user('alice')
+    assert uid
+    uid2 = ensure_user('alice')
+    assert uid == uid2
+    r = get_db().execute("SELECT username FROM users WHERE id=?", (uid,)).fetchone()
+    assert r['username'] == 'alice'
+    print("PASS: ensure_user")
+
+def test_doc_crud():
+    conn = get_db()
+    uid = ensure_user('bob')
+    did = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute("INSERT INTO documents (id,title,markdown,updated_by,updated_at) VALUES (?,?,?,?,?)",
+        (did, 'Doc1', '# Hello', uid, now))
+    conn.commit()
+    r = conn.execute("SELECT * FROM documents WHERE id=?", (did,)).fetchone()
+    assert r['title'] == 'Doc1'
+    assert r['markdown'] == '# Hello'
+    print("PASS: doc_crud")
+
+def test_doc_overwrite():
+    conn = get_db()
+    uid = ensure_user('carol')
+    did = str(uuid.uuid4())
+    conn.execute("INSERT INTO documents (id,title,markdown,updated_by,updated_at) VALUES (?,?,?,?,?)",
+        (did, 'D', 'v1', uid, datetime.now(timezone.utc).isoformat()))
+    conn.commit()
+    conn.execute("UPDATE documents SET markdown='v2' WHERE id=?", (did,))
+    conn.commit()
+    r = conn.execute("SELECT markdown FROM documents WHERE id=?", (did,)).fetchone()
+    assert r['markdown'] == 'v2'
+    assert conn.execute("SELECT COUNT(*) FROM change_sets").fetchone()[0] == 0
+    print("PASS: doc_overwrite_no_versions")
+
+def test_diff_add_change_del():
+    base = "a\nb\nc\n"
+    cand = "a\nB\nd\n"
+    d = json.loads(compute_diff(base, cand))
+    types = [x['type'] for x in d]
+    assert 'context' in types
+    assert 'added' in types
+    assert 'removed' in types
+    print("PASS: diff_add_change_del")
+
+def test_diff_empty_base():
+    d = json.loads(compute_diff('', 'x\ny\n'))
+    assert all(x['type'] == 'added' for x in d)
+    print("PASS: diff_empty_base")
+
+def test_md_headings():
+    h = markdown_to_html("# H1\n\n## H2\n\n### H3")
+    assert '<h1>H1</h1>' in h
+    assert '<h2>H2</h2>' in h
+    assert '<h3>H3</h3>' in h
+    print("PASS: md_headings")
+
+def test_md_list():
+    h = markdown_to_html("- a\n- b\n- c")
+    assert '<ul>' in h and '<li>' in h
+    print("PASS: md_list")
+
+def test_md_code():
+    h = markdown_to_html("```py\nprint(1)\n```")
+    assert '<pre>' in h
+    print("PASS: md_code")
+
+def test_md_inline_math():
+    h = markdown_to_html("Val is $E=mc^2$ today")
+    assert 'math-inline' in h
+    print("PASS: md_inline_math")
+
+def test_md_table():
+    h = markdown_to_html("| A | B |\n|---|---|\n| 1 | 2 |")
+    assert '<table>' in h and '<th>' in h and '<td>' in h
+    print("PASS: md_table")
+
+def main():
+    tests = [test_init_db, test_ensure_user, test_doc_crud, test_doc_overwrite,
+             test_diff_add_change_del, test_diff_empty_base, test_md_headings,
+             test_md_list, test_md_code, test_md_inline_math, test_md_table]
+    ok = 0; fail = 0
+    for t in tests:
+        try:
+            t(); ok += 1
+        except AssertionError as e:
+            print(f"FAIL: {t.__name__}: {e}"); fail += 1
+        except Exception as e:
+            print(f"ERROR: {t.__name__}: {type(e).__name__}: {e}"); fail += 1
+    print(f"\n{ok} passed, {fail} failed")
+    return fail
+
+if __name__ == '__main__':
+    sys.exit(main())

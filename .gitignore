@@ -1,0 +1,12 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+data/
+flask_session/
+md_review.db
+server_error.log
+cookies.txt
+
+.DS_Store
