@@ -250,6 +250,36 @@ try:
     assert stored_thread['resolved'] is True
     assert len(stored_thread['comments']) == 1
     assert stored_thread['anchor']['selectedText'] == 'Editor'
+    doc_abs_path = os.path.join(REPO_DIR, doc_context['filePath'])
+    with open(doc_abs_path, 'w', encoding='utf-8') as handle:
+        handle.write('# Editor Updated\n\nLater commit.\n')
+    subprocess.run(['git', '-C', REPO_DIR, 'add', doc_context['filePath']], check=True)
+    subprocess.run(
+        ['git', '-C', REPO_DIR, 'commit', '-m', 'doc update after comments'],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL
+    )
+    later_doc = editor_client.get(f'/api/documents/{doc_id}')
+    assert later_doc.status_code == 200
+    later_context = {
+        'documentId': doc_id,
+        'filePath': later_doc.get_json()['repoPath'],
+        'commitSha': later_doc.get_json()['currentCommitSha']
+    }
+    assert later_context['commitSha'] != doc_context['commitSha']
+    inherited_threads = editor_client.get(
+        f"/api/documents/{doc_id}/threads?commitSha={later_context['commitSha']}&filePath={later_context['filePath']}"
+    )
+    assert inherited_threads.status_code == 200
+    inherited_thread = next(t for t in inherited_threads.get_json() if t['id'] == tid)
+    assert inherited_thread['comments'][0]['body'] == 'Great work'
+    r4 = editor_client.post('/api/comment-lines', json={**later_context, 'threadId': tid, 'body': 'Still here on later commit'})
+    assert r4.status_code == 201
+    with open(comment_file, 'r', encoding='utf-8') as handle:
+        stored_comments = json.load(handle)
+    stored_thread = next(t for t in stored_comments['threads'] if t['id'] == tid)
+    assert len(stored_thread['comments']) == 2
     empty_listing = editor_client.get(
         f"/api/documents/{doc_id}/threads?commitSha={'0' * 40}&filePath={doc_context['filePath']}"
     )

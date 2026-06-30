@@ -113,6 +113,38 @@ def get_comment_store_path(file_path, commit_sha):
     return get_comments_root() / rel_path / f'{commit_sha}.json'
 
 
+def _git_is_ancestor(ancestor_commit, descendant_commit):
+    repo_root = get_repo_root()
+    try:
+        result = subprocess.run(
+            ['git', '-C', str(repo_root), 'merge-base', '--is-ancestor', ancestor_commit, descendant_commit],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+    except Exception:
+        return False
+    return result.returncode == 0
+
+
+def list_applicable_comment_store_commits(file_path, commit_sha):
+    rel_path = normalize_repo_relative_path(file_path)
+    commit_sha = (commit_sha or '').strip()
+    if not commit_sha:
+        raise ValueError('commitSha required')
+
+    store_dir = get_comments_root() / rel_path
+    if not store_dir.exists():
+        return []
+
+    matching = []
+    for path in store_dir.glob('*.json'):
+        candidate_commit = path.stem.strip()
+        if candidate_commit == commit_sha or _git_is_ancestor(candidate_commit, commit_sha):
+            matching.append(candidate_commit)
+    return matching
+
+
 def load_comment_store(file_path, commit_sha):
     store_path = get_comment_store_path(file_path, commit_sha)
     if not store_path.exists():
@@ -127,6 +159,10 @@ def load_comment_store(file_path, commit_sha):
     data.setdefault('commitSha', commit_sha)
     data.setdefault('threads', [])
     return data
+
+
+def load_applicable_comment_stores(file_path, commit_sha):
+    return [load_comment_store(file_path, item_commit) for item_commit in list_applicable_comment_store_commits(file_path, commit_sha)]
 
 
 def save_comment_store(file_path, commit_sha, payload):

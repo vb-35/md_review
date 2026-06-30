@@ -3,7 +3,12 @@ from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify, session
 from models import get_db, get_document_for_user, user_can_edit_document
 from utils.diff import compute_diff
-from utils.repo_storage import load_comment_store, normalize_repo_relative_path, save_comment_store
+from utils.repo_storage import (
+    load_applicable_comment_stores,
+    load_comment_store,
+    normalize_repo_relative_path,
+    save_comment_store,
+)
 
 review_bp = Blueprint('review', __name__)
 
@@ -165,11 +170,12 @@ def require_thread_edit_context(thread_id, uid, data):
     access_error = require_document_access(context['documentId'], uid)
     if access_error:
         return None, None, access_error
-    store = load_comment_store(context['filePath'], context['commitSha'])
-    thread = next((t for t in store.get('threads', []) if t.get('id') == thread_id), None)
-    if not thread:
-        return None, None, (jsonify({'error': 'Not found'}), 404)
-    return context, store, None
+    for store in load_applicable_comment_stores(context['filePath'], context['commitSha']):
+        thread = next((t for t in store.get('threads', []) if t.get('id') == thread_id), None)
+        if thread:
+            context['commitSha'] = store.get('commitSha', context['commitSha'])
+            return context, store, None
+    return None, None, (jsonify({'error': 'Not found'}), 404)
 
 @review_bp.route('/comments/threads', methods=['POST'])
 @require_auth
@@ -271,12 +277,15 @@ def list_threads(doc_id):
     if not commit_sha or not file_path:
         return jsonify([])
     try:
-        store = load_comment_store(file_path, commit_sha)
+        stores = load_applicable_comment_stores(file_path, commit_sha)
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
+    merged_threads = []
+    for store in stores:
+        merged_threads.extend(store.get('threads', []))
     threads = [
         serialize_thread(thread)
-        for thread in sorted(store.get('threads', []), key=lambda item: item.get('createdAt', ''), reverse=True)
+        for thread in sorted(merged_threads, key=lambda item: item.get('createdAt', ''), reverse=True)
         if thread.get('documentId') == doc_id and not thread.get('changeSetId')
     ]
     return jsonify(threads)
