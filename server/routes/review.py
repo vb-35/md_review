@@ -2,7 +2,7 @@ import json
 import uuid
 from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify, session
-from models import get_db, get_document_for_user, user_owns_thread
+from models import get_db, get_document_for_user, user_owns_thread, user_can_edit_document
 from utils.diff import compute_diff
 
 review_bp = Blueprint('review', __name__)
@@ -16,9 +16,17 @@ def require_auth(f):
         return f(*args, **kwargs)
     return decorated
 
-def require_owned_document(doc_id, user_id):
+def require_document_access(doc_id, user_id):
     if not get_document_for_user(doc_id, user_id):
         return jsonify({'error': 'Not found'}), 404
+    return None
+
+def require_document_edit(doc_id, user_id):
+    access_error = require_document_access(doc_id, user_id)
+    if access_error:
+        return access_error
+    if not user_can_edit_document(doc_id, user_id):
+        return jsonify({'error': 'Forbidden'}), 403
     return None
 
 # ===== Version History =====
@@ -26,7 +34,7 @@ def require_owned_document(doc_id, user_id):
 @review_bp.route('/documents/<doc_id>/versions', methods=['GET'])
 @require_auth
 def list_versions(doc_id):
-    ownership_error = require_owned_document(doc_id, session['user_id'])
+    ownership_error = require_document_access(doc_id, session['user_id'])
     if ownership_error:
         return ownership_error
     conn = get_db()
@@ -55,7 +63,7 @@ def compare_versions():
     if not ver_a or not ver_b:
         return jsonify({'error': 'versionA and versionB required'}), 400
 
-    ownership_error = require_owned_document(doc_id, session['user_id'])
+    ownership_error = require_document_access(doc_id, session['user_id'])
     if ownership_error:
         return ownership_error
 
@@ -87,7 +95,7 @@ def revert_version(version_id):
         return jsonify({'error': 'Version not found'}), 404
 
     doc_id = ver['document_id']
-    ownership_error = require_owned_document(doc_id, uid)
+    ownership_error = require_document_edit(doc_id, uid)
     if ownership_error:
         return ownership_error
     now = datetime.now(timezone.utc).isoformat()
@@ -136,7 +144,7 @@ def create_thread():
     cs_id = data.get('changeSetId')
     now = datetime.now(timezone.utc).isoformat()
 
-    ownership_error = require_owned_document(doc_id, uid)
+    ownership_error = require_document_access(doc_id, uid)
     if ownership_error:
         return ownership_error
 
@@ -176,6 +184,15 @@ def add_comment():
 
     if not user_owns_thread(data['threadId'], uid):
         return jsonify({'error': 'Not found'}), 404
+    thread_row = get_db().execute(
+        "SELECT document_id FROM comment_threads WHERE id = ?",
+        (data['threadId'],)
+    ).fetchone()
+    if not thread_row:
+        return jsonify({'error': 'Not found'}), 404
+    access_error = require_document_access(thread_row['document_id'], uid)
+    if access_error:
+        return access_error
 
     comment_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
@@ -191,7 +208,7 @@ def add_comment():
 @review_bp.route('/documents/<doc_id>/threads', methods=['GET'])
 @require_auth
 def list_threads(doc_id):
-    ownership_error = require_owned_document(doc_id, session['user_id'])
+    ownership_error = require_document_access(doc_id, session['user_id'])
     if ownership_error:
         return ownership_error
     conn = get_db()
@@ -249,9 +266,12 @@ def toggle_resolve(thread_id):
     if not user_owns_thread(thread_id, uid):
         return jsonify({'error': 'Not found'}), 404
     conn = get_db()
-    row = conn.execute("SELECT id FROM comment_threads WHERE id = ?", (thread_id,)).fetchone()
+    row = conn.execute("SELECT id, document_id FROM comment_threads WHERE id = ?", (thread_id,)).fetchone()
     if not row:
         return jsonify({'error': 'Not found'}), 404
+    edit_error = require_document_edit(row['document_id'], uid)
+    if edit_error:
+        return edit_error
 
     now = datetime.now(timezone.utc).isoformat()
     try:

@@ -12,25 +12,20 @@
   <div id="app">
     <nav id="topbar" class="hidden">
       <div class="topbar-left">
-        <button id="btn-menu" title="Documents">&#9776;</button>
+        <button id="btn-menu" title="Documents">Documents</button>
         <span id="doc-title"></span>
+        <span id="doc-role-badge" class="hidden badge"></span>
         <span id="lock-badge" class="hidden badge badge-lock"></span>
       </div>
       <div class="topbar-actions">
         <button id="btn-save" title="Save" disabled>&#10004; Save</button>
-        <button id="btn-lock" title="Lock/Unlock">&#128277; Lock</button>
-        <button id="btn-review" title="Start Review">&#9776; Review</button>
-        <button id="btn-threads" title="Comments">&#128172; Comments</button>
+        <button id="btn-lock" title="Lock/Unlock" disabled>&#128277; Lock</button>
+        <button id="btn-review" title="Version History" disabled>Review</button>
+        <button id="btn-threads" title="Comments" disabled>Comments</button>
         <span id="user-display"></span>
         <button id="btn-logout">Logout</button>
       </div>
     </nav>
-
-    <div id="doc-sidebar" class="sidebar hidden">
-      <h3>Documents</h3>
-      <button id="btn-new-doc">+ New Document</button>
-      <ul id="doc-list"></ul>
-    </div>
 
     <main id="login-screen">
       <div class="login-box">
@@ -45,10 +40,82 @@
       </div>
     </main>
 
+    <main id="dashboard-screen" class="hidden">
+      <div class="dashboard-shell">
+        <section class="dashboard-list-panel">
+          <div class="dashboard-panel-header">
+            <div>
+              <h2>Documents</h2>
+              <p>Browse owned and shared documents.</p>
+            </div>
+            <button id="btn-new-doc" class="primary">+ New Document</button>
+          </div>
+
+          <div class="dashboard-section">
+            <div class="section-label">Owned by me</div>
+            <div id="owned-docs" class="document-list"></div>
+          </div>
+
+          <div class="dashboard-section">
+            <div class="section-label">Shared with me</div>
+            <div id="shared-docs" class="document-list"></div>
+          </div>
+        </section>
+
+        <section class="dashboard-detail-panel">
+          <div id="doc-detail-empty" class="empty-state">
+            Select a document to inspect its metadata and sharing.
+          </div>
+
+          <div id="doc-detail" class="hidden">
+            <div class="detail-header">
+              <div>
+                <div id="detail-title" class="detail-title"></div>
+                <div id="detail-subtitle" class="detail-subtitle"></div>
+              </div>
+              <div class="detail-actions">
+                <button id="btn-open-doc" class="primary">Open Editor</button>
+                <button id="btn-delete-doc" class="danger hidden">Delete</button>
+              </div>
+            </div>
+
+            <div class="detail-grid">
+              <div class="detail-card">
+                <h3>Metadata</h3>
+                <dl id="doc-metadata" class="metadata-list"></dl>
+              </div>
+
+              <div class="detail-card">
+                <h3>Access</h3>
+                <div id="doc-access-summary" class="access-summary"></div>
+              </div>
+            </div>
+
+            <div id="share-card" class="detail-card hidden">
+              <div class="share-card-header">
+                <h3>Sharing</h3>
+                <span>Owner only</span>
+              </div>
+              <form id="share-form" class="share-form">
+                <input type="text" id="share-username" placeholder="Existing username" autocomplete="off">
+                <select id="share-role">
+                  <option value="viewer">Viewer</option>
+                  <option value="editor">Editor</option>
+                </select>
+                <button type="submit">Share</button>
+              </form>
+              <p id="share-error" class="error hidden"></p>
+              <div id="share-list" class="share-list"></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+
     <main id="editor-screen" class="hidden">
       <div id="split-view">
         <div id="editor-pane">
-          <div class="pane-header">Source <span id="line-numbers"></span></div>
+          <div class="pane-header">Source</div>
           <textarea id="editor" spellcheck="false"></textarea>
         </div>
         <div id="preview-pane">
@@ -63,25 +130,25 @@
         <h3>Version History</h3>
         <button id="btn-close-review" class="panel-close">&times;</button>
       </div>
-      <div id="version-actions" style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;gap:6px;align-items:center;">
-        <button id="btn-select-base" style="font-size:11px;flex:1;">Select Base</button>
-        <button id="btn-select-head" style="font-size:11px;flex:1;">Select Head</button>
-        <button id="btn-compare" style="font-size:11px;">Diff</button>
+      <div id="version-actions">
+        <button id="btn-select-base">Select Base</button>
+        <button id="btn-select-head">Select Head</button>
+        <button id="btn-compare">Diff</button>
       </div>
-      <select id="version-select-base" style="margin:8px 12px 0;padding:4px 8px;font-size:11px;width:calc(100% - 24px);"></select>
-      <select id="version-select-head" style="margin:4px 12px 0;padding:4px 8px;font-size:11px;width:calc(100% - 24px);"></select>
+      <select id="version-select-base"></select>
+      <select id="version-select-head"></select>
       <div id="diff-view"></div>
-      <div id="version-diff-actions" class="hidden" style="padding:10px 12px;border-top:1px solid var(--border);display:flex;gap:8px;align-items:center;">
-        <button id="btn-revert" class="btn-reject" style="font-size:12px;">Revert to this version</button>
-        <span id="diff-meta" style="font-size:11px;color:var(--fg-dim);"></span>
+      <div id="version-diff-actions" class="hidden">
+        <button id="btn-revert" class="btn-revert">Revert to this version</button>
+        <span id="diff-meta"></span>
       </div>
     </div>
 
     <div id="comments-panel" class="panel hidden">
       <div class="panel-header">
         <h3>Comments</h3>
-        <div style="display:flex;gap:6px;align-items:center;">
-          <label style="display:flex;align-items:center;gap:4px;font-size:12px;cursor:pointer;color:var(--fg-dim);">
+        <div class="comments-panel-actions">
+          <label>
             <input type="checkbox" id="show-resolved"> Show resolved
           </label>
           <button id="btn-close-comments" class="panel-close">&times;</button>

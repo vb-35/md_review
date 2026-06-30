@@ -18,7 +18,7 @@ app = Flask(__name__)
 def test_init_db():
     db = init_db()
     t = [r['name'] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-    for name in ('users','documents','change_sets','comment_threads','comments','comment_anchors'):
+    for name in ('users','documents','change_sets','document_shares','comment_threads','comments','comment_anchors'):
         assert name in t, f"{name} missing"
     db.close()
     print("PASS: init_db")

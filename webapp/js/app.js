@@ -1,4 +1,3 @@
-/* ===== API Helpers ===== */
 const API = (() => {
   let path = window.location.pathname || '/';
   if (path.endsWith('/index.html')) {
@@ -8,10 +7,33 @@ const API = (() => {
   const normalized = path.endsWith('/') ? path.slice(0, -1) : path;
   return `${normalized}/api`;
 })();
-let headers = () => ({
-  'Content-Type': 'application/json',
-  ...(currentUser ? { 'X-User-Id': currentUser.id } : {})
-});
+
+let currentUser = null;
+let currentDoc = null;
+let docs = [];
+let docShares = [];
+let selectedDashboardDocId = null;
+let versions = [];
+let selectedBaseId = null;
+let selectedHeadId = null;
+let threads = [];
+let editing = false;
+let showResolved = false;
+let authMode = null;
+let passwordLoginEnabled = true;
+let currentView = 'dashboard';
+let previewTimer = null;
+let mathPlaceholders = {};
+let placeholderCounter = 0;
+
+const $ = (sel) => document.querySelector(sel);
+
+function headers() {
+  return {
+    'Content-Type': 'application/json',
+    ...(currentUser ? { 'X-User-Id': currentUser.id } : {})
+  };
+}
 
 async function api(method, path, body) {
   const res = await fetch(API + path, {
@@ -28,64 +50,51 @@ async function api(method, path, body) {
   return data;
 }
 
-/* ===== State ===== */
-let currentUser = null;
-let currentDoc = null;
-let docs = [];
-let versions = [];
-let selectedBaseId = null;
-let selectedHeadId = null;
-let threads = [];
-let editing = false;
-let showResolved = false;
-let authMode = null;
-let passwordLoginEnabled = true;
+function canEditCurrentDoc() {
+  return !!currentDoc && ['owner', 'editor'].includes(currentDoc.accessRole);
+}
 
-/* ===== DOM ===== */
-const $ = (sel) => document.querySelector(sel);
-const $$ = (sel) => document.querySelectorAll(sel);
+function canCommentCurrentDoc() {
+  return !!currentDoc;
+}
 
-/* ===== Auth ===== */
-async function login(username, password) {
+function canResolveThreads() {
+  return canEditCurrentDoc();
+}
+
+function canManageShares() {
+  return !!currentDoc && currentDoc.isOwner;
+}
+
+function holdsCurrentLock() {
+  return !!currentDoc && currentDoc.lockOwnerId === currentUser.id;
+}
+
+function formatDate(value) {
+  if (!value) return 'Unknown';
   try {
-    const response = await api('POST', '/auth/login', { username, password });
-    currentUser = response.user || response;
-    showEditor();
-    await loadDocs();
-  } catch (e) {
-    const err = $('#login-error');
-    err.textContent = e.message;
-    err.classList.remove('hidden');
+    return new Date(value).toLocaleString();
+  } catch {
+    return value;
   }
 }
 
-async function logout() {
-  try { await api('POST', '/auth/logout'); } catch {}
-  currentUser = null;
-  currentDoc = null;
-  authMode = null;
-  passwordLoginEnabled = true;
-  $('#topbar').classList.add('hidden');
-  $('#editor-screen').classList.add('hidden');
-  $('#doc-sidebar').classList.add('hidden');
-  await initAuth();
+function capitalize(value) {
+  return value ? value.charAt(0).toUpperCase() + value.slice(1) : '';
 }
 
-$('#login-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  $('#login-error').classList.add('hidden');
-  login($('#login-username').value, $('#login-password').value);
-});
+function esc(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
 
-$('#btn-logout').addEventListener('click', logout);
+function closePanels() {
+  $('#review-panel').classList.add('hidden');
+  $('#comments-panel').classList.add('hidden');
+}
 
-/* Init selection listener for inline comments */
-initSelectionListener();
-
-/* ===== UI ===== */
-function showEditor() {
-  $('#login-screen').classList.add('hidden');
-  $('#editor-screen').classList.remove('hidden');
+function showTopbar() {
   $('#topbar').classList.remove('hidden');
   $('#user-display').textContent = currentUser.username;
 }
@@ -96,7 +105,9 @@ function showLoginScreen(message = '') {
   const error = $('#login-error');
 
   $('#topbar').classList.add('hidden');
+  $('#dashboard-screen').classList.add('hidden');
   $('#editor-screen').classList.add('hidden');
+  closePanels();
   $('#login-screen').classList.remove('hidden');
 
   if (passwordLoginEnabled) {
@@ -116,6 +127,80 @@ function showLoginScreen(message = '') {
 
   error.classList.add('hidden');
   error.textContent = '';
+}
+
+function showDashboard() {
+  currentView = 'dashboard';
+  $('#login-screen').classList.add('hidden');
+  $('#editor-screen').classList.add('hidden');
+  $('#dashboard-screen').classList.remove('hidden');
+  closePanels();
+  updateHeader();
+}
+
+function showEditor() {
+  currentView = 'editor';
+  $('#login-screen').classList.add('hidden');
+  $('#dashboard-screen').classList.add('hidden');
+  $('#editor-screen').classList.remove('hidden');
+  updateHeader();
+}
+
+function updateHeader() {
+  const title = $('#doc-title');
+  const roleBadge = $('#doc-role-badge');
+  const lockBadge = $('#lock-badge');
+
+  if (!currentDoc) {
+    title.textContent = currentView === 'dashboard' ? 'Documents Dashboard' : '';
+    roleBadge.classList.add('hidden');
+    lockBadge.classList.add('hidden');
+    $('#btn-save').disabled = true;
+    $('#btn-lock').disabled = true;
+    $('#btn-review').disabled = true;
+    $('#btn-threads').disabled = true;
+    $('#btn-menu').textContent = 'Documents';
+    return;
+  }
+
+  title.textContent = currentDoc.title;
+  roleBadge.textContent = capitalize(currentDoc.accessRole);
+  roleBadge.classList.remove('hidden');
+
+  if (currentDoc.lockOwnerId) {
+    lockBadge.textContent = holdsCurrentLock()
+      ? 'Locked by you'
+      : `Locked by ${currentDoc.lockOwnerUsername || 'another user'}`;
+    lockBadge.classList.remove('hidden');
+  } else {
+    lockBadge.classList.add('hidden');
+  }
+
+  updateEditorPermissions();
+  $('#btn-review').disabled = false;
+  $('#btn-threads').disabled = false;
+  $('#btn-menu').textContent = currentView === 'editor' ? 'Back to Documents' : 'Documents';
+}
+
+function updateEditorPermissions() {
+  const canEdit = canEditCurrentDoc();
+  const saveEnabled = canEdit && holdsCurrentLock() && editing;
+  const lockDisabled = !currentDoc || !canEdit || (!!currentDoc.lockOwnerId && !holdsCurrentLock());
+
+  $('#btn-save').disabled = !saveEnabled;
+  $('#btn-lock').disabled = lockDisabled;
+
+  if (!currentDoc || !canEdit) {
+    $('#btn-lock').textContent = 'Lock';
+  } else if (holdsCurrentLock()) {
+    $('#btn-lock').textContent = 'Unlock';
+  } else if (currentDoc.lockOwnerId) {
+    $('#btn-lock').textContent = 'Locked';
+  } else {
+    $('#btn-lock').textContent = 'Lock';
+  }
+
+  $('#editor').readOnly = !(canEdit && holdsCurrentLock());
 }
 
 function consumeTokenFromUrl() {
@@ -158,12 +243,9 @@ async function bootstrapAuth() {
 async function initAuth() {
   const loginToken = consumeTokenFromUrl();
   try {
-    if (loginToken) {
-      currentUser = await loginWithToken(loginToken);
-    } else {
-      currentUser = await bootstrapAuth();
-    }
-    showEditor();
+    currentUser = loginToken ? await loginWithToken(loginToken) : await bootstrapAuth();
+    showTopbar();
+    showDashboard();
     await loadDocs();
   } catch (e) {
     currentUser = null;
@@ -171,192 +253,238 @@ async function initAuth() {
   }
 }
 
-function renderDocList() {
-  const ul = $('#doc-list');
-  ul.innerHTML = '';
-  for (const doc of docs) {
-    const li = document.createElement('li');
-    if (currentDoc && doc.id === currentDoc.id) li.classList.add('active');
-    li.innerHTML = `
-      <span>${esc(doc.title)}</span>
-      <span class="meta">
-        <span>${doc.lockOwnerId ? '\u{1F512}' : ''}</span>
-        <button class="delete-btn" data-id="${doc.id}" title="Delete">&times;</button>
-      </span>`;
-    li.addEventListener('click', (e) => {
-      if (e.target.classList.contains('delete-btn')) return;
-      openDoc(doc.id);
-    });
-    li.querySelector('.delete-btn').addEventListener('click', async (e) => {
-      e.stopPropagation();
-      if (!confirm('Delete this document?')) return;
-      await api('DELETE', `/documents/${doc.id}`);
-      if (currentDoc && currentDoc.id === doc.id) {
-        currentDoc = null;
-        $('#editor').value = '';
-        $('#doc-title').textContent = '';
-        $('#btn-save').disabled = true;
-      }
-      loadDocs();
-    });
-    ul.appendChild(li);
+async function login(username, password) {
+  try {
+    const response = await api('POST', '/auth/login', { username, password });
+    currentUser = response.user || response;
+    showTopbar();
+    showDashboard();
+    await loadDocs();
+  } catch (e) {
+    const err = $('#login-error');
+    err.textContent = e.message;
+    err.classList.remove('hidden');
   }
 }
 
-function toggleSidebar() {
-  $('#doc-sidebar').classList.toggle('hidden');
+async function logout() {
+  try {
+    await api('POST', '/auth/logout');
+  } catch {}
+  currentUser = null;
+  currentDoc = null;
+  docs = [];
+  docShares = [];
+  selectedDashboardDocId = null;
+  authMode = null;
+  passwordLoginEnabled = true;
+  await initAuth();
 }
-$('#btn-menu').addEventListener('click', toggleSidebar);
 
-$('#btn-new-doc').addEventListener('click', async () => {
-  const title = prompt('Document title:');
-  if (!title) return;
-  const doc = await api('POST', '/documents', { title, markdown: `# ${title}\n\n` });
-  await loadDocs();
-  openDoc(doc.id);
-});
-
-/* ===== Documents ===== */
 async function loadDocs() {
   docs = await api('GET', '/documents');
-  renderDocList();
-  $('#doc-sidebar').classList.add('hidden');
-}
+  renderDocLists();
 
-async function openDoc(id) {
-  currentDoc = await api('GET', `/documents/${id}`);
-  $('#doc-title').textContent = currentDoc.title;
-  $('#editor').value = currentDoc.markdown;
-  editing = false;
-  updateLockBadge();
-  updateLockBtn();
-  updateSaveBtn();
-  renderPreview();
-  loadThreads();
-  toggleBtns(true);
-  $('#doc-sidebar').classList.add('hidden');
-  renderDocList();
-}
-
-function updateLockBadge() {
-  const badge = $('#lock-badge');
-  if (currentDoc.lockOwnerId) {
-    badge.textContent = currentDoc.lockOwnerId === currentUser.id ? 'Locked by you' : 'Locked';
-    badge.classList.remove('hidden');
-  } else {
-    badge.classList.add('hidden');
-  }
-}
-
-function updateLockBtn() {
-  if (!currentDoc) {
-    $('#btn-lock').disabled = true;
+  if (!docs.length) {
+    selectedDashboardDocId = null;
+    currentDoc = null;
+    docShares = [];
+    renderDocDetail();
+    updateHeader();
     return;
   }
-  $('#btn-lock').disabled = false;
-  if (currentDoc.lockOwnerId === currentUser.id) {
-    $('#btn-lock').innerHTML = '\u{1F513} Unlock';
-  } else if (currentDoc.lockOwnerId) {
-    $('#btn-lock').innerHTML = '\u{1F512} Locked';
-    $('#btn-lock').disabled = true;
-  } else {
-    $('#btn-lock').innerHTML = '\u{1F512} Lock';
+
+  const stillExists = docs.some((doc) => doc.id === selectedDashboardDocId);
+  if (!stillExists) {
+    selectedDashboardDocId = docs[0].id;
+  }
+  await selectDashboardDoc(selectedDashboardDocId, false);
+}
+
+function renderDocLists() {
+  renderDocSection('#owned-docs', docs.filter((doc) => doc.isOwner));
+  renderDocSection('#shared-docs', docs.filter((doc) => !doc.isOwner));
+}
+
+function renderDocSection(selector, items) {
+  const container = $(selector);
+  if (!items.length) {
+    container.innerHTML = '<div class="empty-state">No documents in this section.</div>';
+    return;
+  }
+
+  container.innerHTML = items.map((doc) => `
+    <article class="document-card ${doc.id === selectedDashboardDocId ? 'active' : ''}" data-doc-id="${doc.id}">
+      <div class="document-card-header">
+        <div class="document-card-title">${esc(doc.title)}</div>
+        <div class="document-card-role">${capitalize(doc.accessRole)}</div>
+      </div>
+      <div class="document-card-meta">
+        <div>Owner: ${esc(doc.ownerUsername || 'Unknown')}</div>
+        <div>Updated: ${esc(formatDate(doc.updatedAt))}</div>
+        <div>Updated by: ${esc(doc.updatedByUsername || 'Unknown')}</div>
+        <div>${doc.lockOwnerId ? `Lock: ${esc(doc.lockOwnerUsername || 'Locked')}` : 'Lock: Unlocked'}</div>
+      </div>
+    </article>
+  `).join('');
+
+  container.querySelectorAll('.document-card').forEach((card) => {
+    card.addEventListener('click', () => {
+      selectDashboardDoc(card.dataset.docId);
+    });
+  });
+}
+
+async function selectDashboardDoc(docId, rerenderList = true) {
+  if (!docId) return;
+  selectedDashboardDocId = docId;
+  if (rerenderList) renderDocLists();
+  currentDoc = await api('GET', `/documents/${docId}`);
+  docShares = [];
+  if (canManageShares()) {
+    docShares = await api('GET', `/documents/${docId}/shares`);
+  }
+  renderDocDetail();
+  updateHeader();
+}
+
+function renderDocDetail() {
+  const empty = $('#doc-detail-empty');
+  const detail = $('#doc-detail');
+  const shareCard = $('#share-card');
+  const deleteBtn = $('#btn-delete-doc');
+  const shareError = $('#share-error');
+  shareError.classList.add('hidden');
+  shareError.textContent = '';
+
+  if (!currentDoc) {
+    empty.classList.remove('hidden');
+    detail.classList.add('hidden');
+    return;
+  }
+
+  empty.classList.add('hidden');
+  detail.classList.remove('hidden');
+  $('#detail-title').textContent = currentDoc.title;
+  $('#detail-subtitle').textContent = `${capitalize(currentDoc.accessRole)} access${currentDoc.isOwner ? ' • Owner' : ` • Shared by ${currentDoc.sharedByUsername || 'unknown'}`}`;
+  $('#doc-access-summary').innerHTML = currentDoc.isOwner
+    ? 'You own this document. You can edit, lock, delete, and manage sharing.'
+    : currentDoc.accessRole === 'editor'
+      ? `You can edit this document after taking the lock. Shared by ${esc(currentDoc.sharedByUsername || 'unknown')}.`
+      : `You can view and comment on this document, but editing and sharing are disabled. Shared by ${esc(currentDoc.sharedByUsername || 'unknown')}.`;
+
+  $('#doc-metadata').innerHTML = `
+    <dt>Owner</dt><dd>${esc(currentDoc.ownerUsername || 'Unknown')}</dd>
+    <dt>Role</dt><dd>${esc(capitalize(currentDoc.accessRole))}</dd>
+    <dt>Updated</dt><dd>${esc(formatDate(currentDoc.updatedAt))}</dd>
+    <dt>Updated By</dt><dd>${esc(currentDoc.updatedByUsername || 'Unknown')}</dd>
+    <dt>Lock</dt><dd>${currentDoc.lockOwnerId ? esc(currentDoc.lockOwnerUsername || 'Locked') : 'Unlocked'}</dd>
+  `;
+
+  deleteBtn.classList.toggle('hidden', !currentDoc.isOwner);
+  shareCard.classList.toggle('hidden', !canManageShares());
+  if (canManageShares()) {
+    renderShares();
   }
 }
 
-function toggleBtns(locked) {
-  const canEdit = currentDoc && currentDoc.lockOwnerId === currentUser.id;
-  $('#btn-save').disabled = !canEdit || !editing;
-  // Version history is always available when a doc is open
-  $('#btn-review').disabled = !currentDoc;
-  updateLockBtn();
-}
-
-/* ===== Editor ===== */
-const editor = $('#editor');
-
-editor.addEventListener('input', () => {
-  if (!editing) editing = true;
-  updateSaveBtn();
-  debouncePreview();
-});
-
-editor.addEventListener('keydown', (e) => {
-  if (e.key === 'Tab') {
-    e.preventDefault();
-    const start = editor.selectionStart;
-    const end = editor.selectionEnd;
-    editor.value = editor.value.substring(0, start) + '    ' + editor.value.substring(end);
-    editor.selectionStart = editor.selectionEnd = start + 4;
+function renderShares() {
+  const list = $('#share-list');
+  if (!docShares.length) {
+    list.innerHTML = '<div class="empty-state">This document has not been shared yet.</div>';
+    return;
   }
-  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
-    e.preventDefault();
-    saveDoc();
+
+  list.innerHTML = docShares.map((share) => `
+    <div class="share-row">
+      <div class="share-row-meta">
+        <div class="share-row-username">${esc(share.username)}</div>
+        <div class="share-row-subtitle">Role: ${esc(capitalize(share.role))} • Shared by ${esc(share.sharedByUsername)} • ${esc(formatDate(share.createdAt))}</div>
+      </div>
+      <div class="share-row-actions">
+        <select data-user-id="${share.userId}" class="share-role-select">
+          <option value="viewer" ${share.role === 'viewer' ? 'selected' : ''}>Viewer</option>
+          <option value="editor" ${share.role === 'editor' ? 'selected' : ''}>Editor</option>
+        </select>
+        <button data-user-id="${share.userId}" class="share-remove-btn danger">Remove</button>
+      </div>
+    </div>
+  `).join('');
+
+  list.querySelectorAll('.share-role-select').forEach((select) => {
+    select.addEventListener('change', async () => {
+      const share = docShares.find((item) => item.userId === select.dataset.userId);
+      if (!share) return;
+      try {
+        await api('POST', `/documents/${currentDoc.id}/shares`, {
+          username: share.username,
+          role: select.value
+        });
+        docShares = await api('GET', `/documents/${currentDoc.id}/shares`);
+        renderShares();
+        await loadDocs();
+      } catch (e) {
+        alert(`Failed to update share: ${e.message}`);
+      }
+    });
+  });
+
+  list.querySelectorAll('.share-remove-btn').forEach((button) => {
+    button.addEventListener('click', async () => {
+      try {
+        await api('DELETE', `/documents/${currentDoc.id}/shares/${button.dataset.userId}`);
+        docShares = await api('GET', `/documents/${currentDoc.id}/shares`);
+        renderShares();
+        await loadDocs();
+      } catch (e) {
+        alert(`Failed to remove share: ${e.message}`);
+      }
+    });
+  });
+}
+
+async function openDoc(docId) {
+  currentDoc = await api('GET', `/documents/${docId}`);
+  editing = false;
+  $('#editor').value = currentDoc.markdown || '';
+  renderPreview();
+  await loadThreads();
+  showEditor();
+  updateHeader();
+}
+
+function maybeConfirmDiscard() {
+  if (editing && canEditCurrentDoc() && holdsCurrentLock()) {
+    return window.confirm('Discard unsaved changes and return to the documents dashboard?');
   }
-});
-
-function updateSaveBtn() {
-  const canEdit = currentDoc && currentDoc.lockOwnerId === currentUser.id;
-  $('#btn-save').disabled = !canEdit || !editing;
+  return true;
 }
-
-let previewTimer;
-function debouncePreview() {
-  clearTimeout(previewTimer);
-  previewTimer = setTimeout(renderPreview, 300);
-}
-
-/* ===== Save ===== */
-$('#btn-save').addEventListener('click', saveDoc);
 
 async function saveDoc() {
-  if (!currentDoc || currentDoc.lockOwnerId !== currentUser.id) return;
+  if (!currentDoc || !holdsCurrentLock()) return;
   try {
     currentDoc = await api('PUT', `/documents/${currentDoc.id}`, {
-      markdown: editor.value
+      markdown: $('#editor').value
     });
     editing = false;
-    updateSaveBtn();
     renderPreview();
-    loadThreads();
+    await loadThreads();
+    await loadDocs();
+    updateHeader();
   } catch (e) {
-    alert('Save failed: ' + e.message);
-  }
-}
-
-$('#btn-lock').addEventListener('click', toggleLock);
-
-async function toggleLock() {
-  if (!currentDoc) return;
-  if (currentDoc.lockOwnerId && currentDoc.lockOwnerId === currentUser.id) {
-    await unlockDoc();
-    $('#btn-lock').innerHTML = '\u{1F512} Lock';
-  } else {
-    await tryLockDoc();
-    $('#btn-lock').innerHTML = '\u{1F513} Unlock';
-  }
-  toggleBtns(true);
-}
-
-/* ===== Lock ===== */
-async function tryLock() {
-  if (!currentDoc) return;
-  if (currentDoc.lockOwnerId && currentDoc.lockOwnerId !== currentUser.id) {
-    tryLockDoc();
+    alert(`Save failed: ${e.message}`);
   }
 }
 
 async function tryLockDoc() {
+  if (!currentDoc) return;
   try {
     currentDoc = await api('POST', `/documents/${currentDoc.id}/lock`);
-    updateLockBadge();
-    toggleBtns(true);
+    updateHeader();
   } catch (e) {
-    if (e.message.includes('locked by another user')) {
-      alert('This document is locked by another user.');
-    } else {
-      throw e;
-    }
+    alert(e.message.includes('locked by another user')
+      ? 'This document is locked by another user.'
+      : e.message);
   }
 }
 
@@ -365,29 +493,24 @@ async function unlockDoc() {
   try {
     await api('DELETE', `/documents/${currentDoc.id}/lock`);
     currentDoc.lockOwnerId = null;
-    updateLockBadge();
-    toggleBtns(false);
+    currentDoc.lockOwnerUsername = null;
+    currentDoc.lockedAt = null;
+    updateHeader();
   } catch (e) {
     alert(e.message);
   }
 }
 
-/* ===== Preview ===== */
-let mathPlaceholders = {};
-let placeholderCounter = 0;
-
 function preprocessMath(md) {
   mathPlaceholders = {};
   placeholderCounter = 0;
 
-  // Replace block math $$...$$ first
   md = md.replace(/\$\$([\s\S]+?)\$\$/g, (match, math) => {
     const key = `{MATHB:${placeholderCounter++}}`;
     mathPlaceholders[key] = { type: 'block', math: math.trim() };
     return `\n\n${key}\n\n`;
   });
 
-  // Replace inline math $...$
   md = md.replace(/\$([^\$\n]+?)\$/g, (match, math) => {
     const key = `{MATHI:${placeholderCounter++}}`;
     mathPlaceholders[key] = { type: 'inline', math };
@@ -397,8 +520,11 @@ function preprocessMath(md) {
   return md;
 }
 
+function escapeHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function postprocessMath(html) {
-  // Replace raw keys directly in the HTML string
   for (const [key, { type, math }] of Object.entries(mathPlaceholders)) {
     let rendered;
     try {
@@ -412,328 +538,9 @@ function postprocessMath(html) {
     const wrapper = type === 'block'
       ? `<div class="math-block">${rendered}</div>`
       : `<span class="math-inline">${rendered}</span>`;
-    // Use split+join for reliable replacement
     html = html.split(key).join(wrapper);
   }
   return html;
-}
-
-function escapeHtml(s) {
-  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function renderPreview() {
-  if (!currentDoc) return;
-  let md = editor.value || '';
-  md = preprocessMath(md);
-  const html = marked.parse(md);
-  const finalHtml = postprocessMath(html);
-  const preview = $('#preview');
-  preview.innerHTML = finalHtml;
-
-  // Add data-line attributes to block elements for comment anchoring
-  annotateLines(preview, editor.value);
-
-  renderHighlight(preview);
-  updateCommentMarkers();
-}
-
-/* Map rendered block elements back to source line numbers */
-function annotateLines(container, source) {
-  const lines = source.split('\n');
-  const blockEls = container.querySelectorAll('h1, h2, h3, h4, h5, h6, p, pre, blockquote, li, td, tr, table, ul, ol, div.math-block, hr');
-
-  // Build a text offset -> line number map
-  let offset = 0;
-  const lineMap = [];
-  for (let i = 0; i < lines.length; i++) {
-    lineMap.push({ line: i + 1, offset: offset });
-    offset += lines[i].length + 1;
-  }
-
-  function offsetToLine(off) {
-    for (let i = lineMap.length - 1; i >= 0; i--) {
-      if (off >= lineMap[i].offset) return lineMap[i].line;
-    }
-    return 1;
-  }
-
-  // Walk text nodes to build offset tracking
-  let textOffset = 0;
-  const textNodes = [];
-  function walkTextNodes(el) {
-    for (const node of el.childNodes) {
-      if (node.nodeType === Node.TEXT_NODE) {
-        textNodes.push({ offset: textOffset, len: node.textContent.length });
-        textOffset += node.textContent.length;
-      } else if (node.nodeType === Node.ELEMENT_NODE) {
-        walkTextNodes(node);
-      }
-    }
-  }
-  walkTextNodes(container);
-
-  // For each block element, find the first text node inside it to estimate its source line
-  // Then wrap it with a data-line attribute
-  const processed = new Set();
-  for (const el of blockEls) {
-    if (processed.has(el)) continue;
-
-    // Find the first text node in this element
-    let firstTextOffset = -1;
-    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
-    let tn;
-    while ((tn = walker.nextNode())) {
-      const content = tn.textContent.trim();
-      if (content) {
-        // Search for this text in the source to find its line
-        const searchText = content.substring(0, 50);
-        if (searchText.length > 5) {
-          const escaped = searchText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-          const regex = new RegExp(escaped);
-          for (let i = 0; i < lines.length; i++) {
-            if (regex.test(lines[i])) {
-              firstTextOffset = i + 1;
-              break;
-            }
-          }
-        }
-        break;
-      }
-    }
-
-    if (firstTextOffset > 0) {
-      el.setAttribute('data-line', firstTextOffset);
-    }
-    processed.add(el);
-  }
-}
-
-/* Show comment markers (yellow indicators) next to lines with anchored comments */
-function updateCommentMarkers() {
-  const preview = $('#preview');
-  // Remove existing markers
-  preview.querySelectorAll('.comment-indicator').forEach(m => m.remove());
-
-  if (!threads || threads.length === 0) return;
-
-  for (const thread of threads) {
-    if (!thread.anchor || thread.resolved) continue;
-    const { startLine, endLine } = thread.anchor;
-
-    // Find elements with matching data-line
-    const targets = preview.querySelectorAll(`[data-line="${startLine}"]`);
-    for (const el of targets) {
-      const indicator = document.createElement('span');
-      indicator.className = 'comment-indicator';
-      indicator.title = `${thread.comments.length} comment${thread.comments.length !== 1 ? 's' : ''}`;
-      indicator.textContent = '\u2764';
-      indicator.addEventListener('click', (e) => {
-        e.stopPropagation();
-        openThreadInPanel(thread.id);
-      });
-      // Insert at the beginning of the element
-      el.style.position = 'relative';
-      el.prepend(indicator);
-    }
-  }
-}
-
-/* Click handler for text selection in preview to create anchored comment */
-function initSelectionListener() {
-  const preview = $('#preview');
-  let selectionTimeout;
-
-  preview.addEventListener('mouseup', () => {
-    clearTimeout(selectionTimeout);
-    selectionTimeout = setTimeout(() => {
-      const selection = window.getSelection();
-      if (!selection || selection.isCollapsed || !selection.rangeCount) return;
-
-      const range = selection.getRangeAt(0);
-      if (!preview.contains(range.commonAncestorContainer)) return;
-
-      const text = selection.toString().trim();
-      if (!text || text.length < 2) return;
-
-      // Find the line number of the selection
-      const line = findLineFromSelection(range);
-      if (!line) return;
-
-      // Show a small floating prompt
-      showCommentPrompt(range, line);
-    }, 200);
-  });
-}
-
-function findLineFromSelection(range) {
-  const node = range.startContainer;
-  let el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
-
-  // Try to find data-line on an ancestor
-  while (el && el !== $('#preview')) {
-    if (el.hasAttribute && el.hasAttribute('data-line')) {
-      return parseInt(el.getAttribute('data-line'));
-    }
-    el = el.parentElement;
-  }
-  return null;
-}
-
-function showCommentPrompt(range, line) {
-  // Remove any existing prompt
-  const existing = document.querySelector('.selection-comment-prompt');
-  if (existing) existing.remove();
-
-  const rect = range.getBoundingClientRect();
-  const popup = document.createElement('div');
-  popup.className = 'selection-comment-prompt';
-  popup.innerHTML = `<button>Add comment</button>`;
-  popup.style.cssText = `
-    position: fixed;
-    left: ${rect.left}px;
-    top: ${rect.top - 36}px;
-    z-index: 200;
-    background: var(--bg-surface);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    padding: 4px 8px;
-  `;
-
-  const btn = popup.querySelector('button');
-  btn.addEventListener('mousedown', (e) => {
-    e.stopPropagation();
-  });
-  btn.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    popup.remove();
-    const body = window.prompt('Enter your comment:');
-    if (!body || !body.trim()) return;
-
-    // Capture the selected text content
-    const selection = window.getSelection();
-    const selectedText = selection ? selection.toString().trim() : '';
-
-    try {
-      await api('POST', '/comments/threads', {
-        documentId: currentDoc.id,
-        body: body.trim(),
-        anchor: { startLine: line, endLine: line, selectedText: selectedText }
-      });
-      await loadThreads();
-      updateCommentMarkers();
-    } catch (e) {
-      alert('Failed to create thread: ' + e.message);
-    }
-  });
-
-  document.body.appendChild(popup);
-
-  // Auto-remove on click outside
-  const dismissHandler = (e) => {
-    if (!popup.isConnected) return;
-    if (!popup.contains(e.target)) {
-      popup.remove();
-      document.removeEventListener('mousedown', dismissHandler);
-    }
-  };
-  document.addEventListener('mousedown', dismissHandler);
-}
-
-/* Open a specific thread in the comments panel, scrolling to it and highlighting the text */
-function openThreadInPanel(threadId) {
-  $('#comments-panel').classList.remove('hidden');
-  loadThreads().then(() => {
-    const threadEl = document.querySelector(`.thread[data-thread-id="${threadId}"]`);
-    if (threadEl) {
-      threadEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      threadEl.style.outline = '2px solid var(--accent)';
-      setTimeout(() => { threadEl.style.outline = ''; }, 2000);
-    }
-
-    // Highlight the text in the preview
-    highlightThreadInPreview(threadId);
-  });
-}
-
-function highlightThreadInPreview(threadId) {
-  const thread = threads.find(t => t.id === threadId);
-  if (!thread) return;
-
-  // Remove previous highlights
-  document.querySelectorAll('.thread-text-highlight').forEach(el => {
-    el.classList.remove('thread-text-highlight');
-  });
-
-  const preview = $('#preview');
-
-  // If we have selected text, try to find and select it
-  if (thread.anchor && thread.anchor.selectedText) {
-    const textToFind = thread.anchor.selectedText.trim();
-    if (textToFind.length > 2) {
-      const textWalker = document.createTreeWalker(preview, NodeFilter.SHOW_TEXT, null);
-      let textNode;
-      while ((textNode = textWalker.nextNode())) {
-        if (textNode.textContent.trim() === textToFind) {
-          const range = document.createRange();
-          range.selectNodeContents(textNode.parentElement || textNode);
-          const parent = textNode.parentElement || textNode.parentNode;
-
-          // Find the closest block element with data-line
-          let target = parent;
-          while (target && target !== preview) {
-            if (target.hasAttribute && target.hasAttribute('data-line')) {
-              target.classList.add('thread-text-highlight');
-              target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-
-              // Create a selection within the text node
-              const sel = window.getSelection();
-              const nodeRange = document.createRange();
-              nodeRange.selectNodeContents(textNode);
-              sel.removeAllRanges();
-              sel.addRange(nodeRange);
-
-              setTimeout(() => {
-                target.classList.remove('thread-text-highlight');
-                sel.removeAllRanges();
-              }, 3000);
-              return;
-            }
-            target = target.parentElement;
-          }
-          break;
-        }
-      }
-    }
-  }
-
-  // Fallback: find by line number
-  if (thread.anchor && thread.anchor.startLine) {
-    const target = preview.querySelector(`[data-line="${thread.anchor.startLine}"]`);
-    if (target) {
-      target.classList.add('thread-text-highlight');
-      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      setTimeout(() => { target.classList.remove('thread-text-highlight'); }, 3000);
-    }
-  }
-}
-
-function renderMath(container) {
-  // Kept for backward compatibility, but main math rendering is now done via preprocess/postprocess
-  container.querySelectorAll('.math-inline').forEach((el) => {
-    try {
-      el.outerHTML = katex.renderToString(el.textContent, { throwOnError: false, displayMode: false });
-    } catch {}
-  });
-  container.querySelectorAll('.math-block').forEach((el) => {
-    try {
-      el.outerHTML = katex.renderToString(el.textContent, { throwOnError: false, displayMode: true });
-    } catch {}
-  });
 }
 
 function renderHighlight(container) {
@@ -744,7 +551,333 @@ function renderHighlight(container) {
   });
 }
 
-/* Configure marked */
+function annotateLines(container, source) {
+  const lines = source.split('\n');
+  const blockEls = container.querySelectorAll('h1, h2, h3, h4, h5, h6, p, pre, blockquote, li, td, tr, table, ul, ol, div.math-block, hr');
+  const processed = new Set();
+
+  for (const el of blockEls) {
+    if (processed.has(el)) continue;
+    const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
+    let tn;
+    let lineNumber = null;
+    while ((tn = walker.nextNode())) {
+      const content = tn.textContent.trim();
+      if (!content) continue;
+      const searchText = content.substring(0, 50);
+      for (let i = 0; i < lines.length; i++) {
+        if (lines[i].includes(searchText)) {
+          lineNumber = i + 1;
+          break;
+        }
+      }
+      break;
+    }
+
+    if (lineNumber) {
+      el.setAttribute('data-line', lineNumber);
+    }
+    processed.add(el);
+  }
+}
+
+function updateCommentMarkers() {
+  const preview = $('#preview');
+  preview.querySelectorAll('.comment-indicator').forEach((marker) => marker.remove());
+
+  for (const thread of threads) {
+    if (!thread.anchor || thread.resolved) continue;
+    const targets = preview.querySelectorAll(`[data-line="${thread.anchor.startLine}"]`);
+    targets.forEach((el) => {
+      const indicator = document.createElement('span');
+      indicator.className = 'comment-indicator';
+      indicator.title = `${thread.comments.length} comment${thread.comments.length !== 1 ? 's' : ''}`;
+      indicator.textContent = '●';
+      indicator.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openThreadInPanel(thread.id);
+      });
+      el.style.position = 'relative';
+      el.prepend(indicator);
+    });
+  }
+}
+
+function renderPreview() {
+  if (!currentDoc) return;
+  let md = $('#editor').value || '';
+  md = preprocessMath(md);
+  const html = marked.parse(md);
+  const finalHtml = postprocessMath(html);
+  const preview = $('#preview');
+  preview.innerHTML = finalHtml;
+  annotateLines(preview, $('#editor').value);
+  renderHighlight(preview);
+  updateCommentMarkers();
+}
+
+function findLineFromSelection(range) {
+  const node = range.startContainer;
+  let el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+  while (el && el !== $('#preview')) {
+    if (el.hasAttribute && el.hasAttribute('data-line')) {
+      return parseInt(el.getAttribute('data-line'), 10);
+    }
+    el = el.parentElement;
+  }
+  return null;
+}
+
+function showCommentPrompt(range, line) {
+  const existing = document.querySelector('.selection-comment-prompt');
+  if (existing) existing.remove();
+
+  const rect = range.getBoundingClientRect();
+  const popup = document.createElement('div');
+  popup.className = 'selection-comment-prompt';
+  popup.innerHTML = '<button>Add comment</button>';
+  popup.style.cssText = `
+    position: fixed;
+    left: ${rect.left}px;
+    top: ${rect.top - 36}px;
+    z-index: 200;
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.35);
+    padding: 4px 8px;
+  `;
+
+  popup.querySelector('button').addEventListener('click', async (e) => {
+    e.stopPropagation();
+    popup.remove();
+    const body = window.prompt('Enter your comment:');
+    if (!body || !body.trim()) return;
+
+    const selection = window.getSelection();
+    const selectedText = selection ? selection.toString().trim() : '';
+
+    try {
+      await api('POST', '/comments/threads', {
+        documentId: currentDoc.id,
+        body: body.trim(),
+        anchor: { startLine: line, endLine: line, selectedText }
+      });
+      await loadThreads();
+      updateCommentMarkers();
+    } catch (err) {
+      alert(`Failed to create thread: ${err.message}`);
+    }
+  });
+
+  document.body.appendChild(popup);
+  const dismissHandler = (e) => {
+    if (!popup.isConnected) return;
+    if (!popup.contains(e.target)) {
+      popup.remove();
+      document.removeEventListener('mousedown', dismissHandler);
+    }
+  };
+  document.addEventListener('mousedown', dismissHandler);
+}
+
+function initSelectionListener() {
+  const preview = $('#preview');
+  let selectionTimeout;
+  preview.addEventListener('mouseup', () => {
+    clearTimeout(selectionTimeout);
+    selectionTimeout = setTimeout(() => {
+      if (!canCommentCurrentDoc()) return;
+      const selection = window.getSelection();
+      if (!selection || selection.isCollapsed || !selection.rangeCount) return;
+      const range = selection.getRangeAt(0);
+      if (!preview.contains(range.commonAncestorContainer)) return;
+      const text = selection.toString().trim();
+      if (!text || text.length < 2) return;
+      const line = findLineFromSelection(range);
+      if (!line) return;
+      showCommentPrompt(range, line);
+    }, 200);
+  });
+}
+
+function highlightThreadInPreview(threadId) {
+  const thread = threads.find((t) => t.id === threadId);
+  if (!thread) return;
+
+  document.querySelectorAll('.thread-text-highlight').forEach((el) => {
+    el.classList.remove('thread-text-highlight');
+  });
+
+  const preview = $('#preview');
+  if (thread.anchor && thread.anchor.selectedText) {
+    const textToFind = thread.anchor.selectedText.trim();
+    if (textToFind.length > 2) {
+      const walker = document.createTreeWalker(preview, NodeFilter.SHOW_TEXT, null);
+      let textNode;
+      while ((textNode = walker.nextNode())) {
+        if (textNode.textContent.trim() !== textToFind) continue;
+        let target = textNode.parentElement;
+        while (target && target !== preview) {
+          if (target.hasAttribute && target.hasAttribute('data-line')) {
+            target.classList.add('thread-text-highlight');
+            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            setTimeout(() => target.classList.remove('thread-text-highlight'), 3000);
+            return;
+          }
+          target = target.parentElement;
+        }
+      }
+    }
+  }
+
+  if (thread.anchor && thread.anchor.startLine) {
+    const target = preview.querySelector(`[data-line="${thread.anchor.startLine}"]`);
+    if (target) {
+      target.classList.add('thread-text-highlight');
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      setTimeout(() => target.classList.remove('thread-text-highlight'), 3000);
+    }
+  }
+}
+
+function openThreadInPanel(threadId) {
+  $('#comments-panel').classList.remove('hidden');
+  loadThreads().then(() => {
+    const threadEl = document.querySelector(`.thread[data-thread-id="${threadId}"]`);
+    if (threadEl) {
+      threadEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      threadEl.style.outline = '2px solid var(--accent)';
+      setTimeout(() => {
+        threadEl.style.outline = '';
+      }, 2000);
+    }
+    highlightThreadInPreview(threadId);
+  });
+}
+
+async function loadVersions() {
+  if (!currentDoc) return;
+  versions = await api('GET', `/documents/${currentDoc.id}/versions`);
+  const baseSel = $('#version-select-base');
+  const headSel = $('#version-select-head');
+  baseSel.innerHTML = '<option value="">Base version...</option>';
+  headSel.innerHTML = '<option value="">Head version...</option>';
+  versions.forEach((v) => {
+    const label = `v${v.version} - ${v.message} (${new Date(v.created_at).toLocaleString()})`;
+    baseSel.innerHTML += `<option value="${v.id}">${esc(label)}</option>`;
+    headSel.innerHTML += `<option value="${v.id}">${esc(label)}</option>`;
+  });
+
+  if (versions.length >= 2) {
+    baseSel.value = versions[0].id;
+    headSel.value = versions[1].id;
+  } else if (versions.length === 1) {
+    baseSel.value = versions[0].id;
+  }
+}
+
+function renderDiff(lines) {
+  let html = '';
+  for (const line of lines) {
+    const cls = line.type === 'added' ? 'added' : line.type === 'removed' ? 'removed' : 'context';
+    const prefix = line.type === 'added' ? '+' : line.type === 'removed' ? '-' : ' ';
+    html += `<div class="diff-line ${cls}" data-prefix="${prefix}">${esc(line.line)}</div>`;
+  }
+  $('#diff-view').innerHTML = html || '<p style="padding:20px;color:var(--fg-dim);text-align:center;">No differences</p>';
+}
+
+async function loadThreads() {
+  if (!currentDoc) return;
+  threads = await api('GET', `/documents/${currentDoc.id}/threads`);
+  renderThreads();
+}
+
+function renderThreads() {
+  const container = $('#thread-list');
+  const canComment = canCommentCurrentDoc();
+  const canResolve = canResolveThreads();
+  const visibleThreads = threads.filter((t) => showResolved || !t.resolved);
+  $('#thread-body').disabled = !canComment;
+  $('#btn-add-thread').disabled = !canComment;
+  $('#thread-body').placeholder = canComment ? 'New comment...' : 'Document access required to comment';
+
+  if (!threads.length) {
+    container.innerHTML = '<p style="color:var(--fg-dim);text-align:center;padding:20px;">No comments yet</p>';
+    return;
+  }
+
+  if (!visibleThreads.length) {
+    container.innerHTML = '<p style="color:var(--fg-dim);text-align:center;padding:20px;">All comments resolved</p>';
+    return;
+  }
+
+  container.innerHTML = '';
+  visibleThreads.forEach((thread) => {
+    const div = document.createElement('div');
+    div.className = `thread${thread.resolved ? ' thread-resolved' : ''}`;
+    div.dataset.threadId = thread.id;
+    div.innerHTML = `
+      <div class="thread-meta">
+        <span class="author">${esc(thread.createdByUsername || '?')}</span>
+        <span class="time">${esc(formatDate(thread.createdAt))}</span>
+        <button class="btn-resolve" ${!canResolve ? 'disabled' : ''}>${thread.resolved ? 'Unresolve' : 'Resolve'}</button>
+      </div>
+      ${thread.anchor ? `<div class="anchor-info">Lines ${thread.anchor.startLine}-${thread.anchor.endLine}</div>` : ''}
+      ${thread.resolved ? `<div class="resolved-badge">Resolved${thread.resolvedAt ? ` on ${esc(new Date(thread.resolvedAt).toLocaleDateString())}` : ''}</div>` : ''}
+      <div class="thread-replies">
+        ${(thread.comments || []).map((c) => `
+          <div class="comment">
+            <div class="comment-author">${esc(c.username || 'user')}</div>
+            <div class="comment-time">${esc(formatDate(c.createdAt))}</div>
+            <div class="comment-body">${esc(c.body)}</div>
+          </div>
+        `).join('')}
+      </div>
+    `;
+
+    const replySection = document.createElement('div');
+    replySection.className = 'new-thread';
+    const replyInput = document.createElement('input');
+    replyInput.placeholder = canComment ? 'Reply...' : 'Document access required to reply';
+    replyInput.disabled = !canComment || thread.resolved;
+    const replyBtn = document.createElement('button');
+    replyBtn.textContent = 'Reply';
+    replyBtn.disabled = !canComment || thread.resolved;
+    replyBtn.addEventListener('click', async () => {
+      if (!replyInput.value.trim()) return;
+      try {
+        await api('POST', '/comment-lines', { threadId: thread.id, body: replyInput.value.trim() });
+        await loadThreads();
+      } catch (e) {
+        alert(e.message);
+      }
+    });
+    replySection.appendChild(replyInput);
+    replySection.appendChild(replyBtn);
+    div.appendChild(replySection);
+
+    div.addEventListener('click', (e) => {
+      if (e.target.closest('.btn-resolve') || e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
+      openThreadInPanel(thread.id);
+    });
+
+    div.querySelector('.btn-resolve').addEventListener('click', async (e) => {
+      e.stopPropagation();
+      if (!canResolve) return;
+      try {
+        await api('POST', `/comments/threads/${thread.id}/resolve`);
+        await loadThreads();
+        updateCommentMarkers();
+      } catch (err) {
+        alert(`Resolve failed: ${err.message}`);
+      }
+    });
+
+    container.appendChild(div);
+  });
+}
+
 marked.setOptions({
   breaks: true,
   gfm: true,
@@ -752,46 +885,109 @@ marked.setOptions({
   mangle: false
 });
 
-/* ===== Version History Panel ===== */
-$('#btn-review').addEventListener('click', () => {
-  $('#review-panel').classList.remove('hidden');
-  selectedBaseId = null;
-  selectedHeadId = null;
-  loadVersions();
+$('#login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  $('#login-error').classList.add('hidden');
+  await login($('#login-username').value, $('#login-password').value);
 });
-$('#btn-close-review').addEventListener('click', () => $('#review-panel').classList.add('hidden'));
 
-async function loadVersions() {
+$('#btn-logout').addEventListener('click', logout);
+
+$('#btn-menu').addEventListener('click', async () => {
+  if (currentView === 'editor') {
+    if (!maybeConfirmDiscard()) return;
+    showDashboard();
+    await loadDocs();
+  }
+});
+
+$('#btn-new-doc').addEventListener('click', async () => {
+  const title = prompt('Document title:');
+  if (!title) return;
+  const doc = await api('POST', '/documents', { title, markdown: `# ${title}\n\n` });
+  await loadDocs();
+  await selectDashboardDoc(doc.id);
+});
+
+$('#btn-open-doc').addEventListener('click', async () => {
   if (!currentDoc) return;
-  try {
-    versions = await api('GET', `/documents/${currentDoc.id}/versions`);
-    renderVersionSelects();
-  } catch (e) {
-    console.error(e);
-  }
-}
+  await openDoc(currentDoc.id);
+});
 
-function renderVersionSelects() {
-  const baseSel = $('#version-select-base');
-  const headSel = $('#version-select-head');
-  baseSel.innerHTML = '<option value="">Base version...</option>';
-  headSel.innerHTML = '<option value="">Head version...</option>';
-  for (const v of versions) {
-    const label = `v${v.version} — ${esc(v.message)} (${new Date(v.created_at).toLocaleString()})`;
-    baseSel.innerHTML += `<option value="${v.id}">${label}</option>`;
-    headSel.innerHTML += `<option value="${v.id}">${label}</option>`;
+$('#btn-delete-doc').addEventListener('click', async () => {
+  if (!currentDoc || !currentDoc.isOwner) return;
+  if (!window.confirm('Delete this document?')) return;
+  await api('DELETE', `/documents/${currentDoc.id}`);
+  currentDoc = null;
+  selectedDashboardDocId = null;
+  await loadDocs();
+});
+
+$('#share-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const username = $('#share-username').value.trim();
+  const role = $('#share-role').value;
+  const error = $('#share-error');
+  error.classList.add('hidden');
+  error.textContent = '';
+
+  if (!username || !currentDoc) return;
+  try {
+    await api('POST', `/documents/${currentDoc.id}/shares`, { username, role });
+    $('#share-username').value = '';
+    docShares = await api('GET', `/documents/${currentDoc.id}/shares`);
+    renderShares();
+    await loadDocs();
+  } catch (err) {
+    error.textContent = err.message;
+    error.classList.remove('hidden');
   }
-  // Pre-select: latest as base, second latest as head
-  if (versions.length >= 2) {
-    baseSel.value = versions[0].id;
-    headSel.value = versions[1].id;
-    selectedBaseId = versions[0].id;
-    selectedHeadId = versions[1].id;
-  } else if (versions.length === 1) {
-    baseSel.value = versions[0].id;
-    selectedBaseId = versions[0].id;
+});
+
+$('#editor').addEventListener('input', () => {
+  editing = true;
+  updateHeader();
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(renderPreview, 300);
+});
+
+$('#editor').addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    e.preventDefault();
+    saveDoc();
   }
-}
+  if (e.key === 'Tab' && !$('#editor').readOnly) {
+    e.preventDefault();
+    const start = $('#editor').selectionStart;
+    const end = $('#editor').selectionEnd;
+    const value = $('#editor').value;
+    $('#editor').value = `${value.substring(0, start)}    ${value.substring(end)}`;
+    $('#editor').selectionStart = $('#editor').selectionEnd = start + 4;
+    editing = true;
+    updateHeader();
+  }
+});
+
+$('#btn-save').addEventListener('click', saveDoc);
+
+$('#btn-lock').addEventListener('click', async () => {
+  if (!currentDoc) return;
+  if (holdsCurrentLock()) {
+    await unlockDoc();
+  } else {
+    await tryLockDoc();
+  }
+  await loadDocs();
+  updateHeader();
+});
+
+$('#btn-review').addEventListener('click', async () => {
+  if (!currentDoc) return;
+  $('#review-panel').classList.remove('hidden');
+  await loadVersions();
+});
+
+$('#btn-close-review').addEventListener('click', () => $('#review-panel').classList.add('hidden'));
 
 $('#btn-select-base').addEventListener('click', () => {
   selectedBaseId = $('#version-select-base').value;
@@ -804,12 +1000,10 @@ $('#btn-select-head').addEventListener('click', () => {
 $('#btn-compare').addEventListener('click', async () => {
   selectedBaseId = $('#version-select-base').value;
   selectedHeadId = $('#version-select-head').value;
-
   if (!selectedBaseId || !selectedHeadId) {
     alert('Select both base and head versions.');
     return;
   }
-
   try {
     const result = await api('POST', '/versions', {
       documentId: currentDoc.id,
@@ -818,188 +1012,40 @@ $('#btn-compare').addEventListener('click', async () => {
     });
     renderDiff(result.diff);
     $('#version-diff-actions').classList.remove('hidden');
-    $('#version-diff-actions').style.display = 'flex';
-    $('#diff-meta').textContent = `v${result.versionA} → v${result.versionB}`;
+    $('#diff-meta').textContent = `v${result.versionA} -> v${result.versionB}`;
     $('#btn-revert').dataset.versionId = selectedHeadId;
-    $('#btn-revert').disabled = false;
+    $('#btn-revert').disabled = !canEditCurrentDoc();
   } catch (e) {
-    alert('Diff failed: ' + e.message);
+    alert(`Diff failed: ${e.message}`);
   }
 });
 
 $('#btn-revert').addEventListener('click', async () => {
   const verId = $('#btn-revert').dataset.versionId;
-  if (!verId) return;
-  if (!confirm('Revert document to this version? This will create a new version.')) return;
+  if (!verId || !canEditCurrentDoc()) return;
+  if (!window.confirm('Revert document to this version? This will create a new version.')) return;
   try {
-    const result = await api('POST', `/versions/${verId}/revert`);
-    // Reload doc
+    await api('POST', `/versions/${verId}/revert`);
     currentDoc = await api('GET', `/documents/${currentDoc.id}`);
-    editor.value = currentDoc.markdown;
+    $('#editor').value = currentDoc.markdown || '';
     editing = false;
-    updateSaveBtn();
     renderPreview();
-    loadThreads();
-    // Reload versions
+    await loadThreads();
     await loadVersions();
-    $('#diff-view').innerHTML = '<p style="padding:20px;color:var(--green);text-align:center;">Reverted to v' + result.version + '</p>';
+    await loadDocs();
+    updateHeader();
   } catch (e) {
-    alert('Revert failed: ' + e.message);
+    alert(`Revert failed: ${e.message}`);
   }
 });
 
-function renderDiff(lines) {
-  let html = '';
-  let hunkIdx = 0;
-  let inHunk = false;
-
-  for (const line of lines) {
-    const isChange = line.type === 'added' || line.type === 'removed';
-    if (isChange) {
-      if (!inHunk) {
-        inHunk = true;
-        html += `<div class="diff-hunk" data-hunk="${hunkIdx}">`;
-      }
-      const cls = line.type === 'added' ? 'added' : 'removed';
-      const prefix = line.type === 'added' ? '+' : '-';
-      html += `<div class="diff-line ${cls}" data-prefix="${prefix}">${esc(line.line)}</div>`;
-    } else {
-      if (inHunk) {
-        html += `</div>`;
-        inHunk = false;
-        hunkIdx++;
-      }
-      html += `<div class="diff-line context" data-prefix=" ">${esc(line.line)}</div>`;
-    }
-  }
-  if (inHunk) html += `</div>`;
-
-  if (!html) {
-    html = '<p style="padding:20px;color:var(--fg-dim);text-align:center;">No differences</p>';
-  }
-
-  $('#diff-view').innerHTML = html;
-}
-
-/* ===== Comments Panel ===== */
-$('#btn-threads').addEventListener('click', () => {
-  $('#comments-panel').classList.remove('hidden');
-  loadThreads();
-});
-$('#btn-close-comments').addEventListener('click', () => $('#comments-panel').classList.add('hidden'));
-
-async function loadThreads() {
+$('#btn-threads').addEventListener('click', async () => {
   if (!currentDoc) return;
-  try {
-    threads = await api('GET', `/documents/${currentDoc.id}/threads`);
-    renderThreads();
-  } catch (e) {
-    console.error('Failed to load threads:', e);
-    alert('Failed to load threads. Make sure the server is restarted.');
-  }
-}
+  $('#comments-panel').classList.remove('hidden');
+  await loadThreads();
+});
 
-function renderThreads() {
-  const container = $('#thread-list');
-  container.innerHTML = '';
-
-  const visibleThreads = threads.filter(t => showResolved || !t.resolved);
-
-  if (threads.length === 0) {
-    container.innerHTML = '<p style="color:var(--fg-dim);text-align:center;padding:20px;">No comments yet</p>';
-    return;
-  }
-
-  if (visibleThreads.length === 0) {
-    container.innerHTML = '<p style="color:var(--fg-dim);text-align:center;padding:20px;">All comments resolved</p>';
-    return;
-  }
-
-  for (const thread of visibleThreads) {
-    const div = document.createElement('div');
-    div.className = 'thread' + (thread.resolved ? ' thread-resolved' : '');
-    div.setAttribute('data-thread-id', thread.id);
-    div.style.cursor = 'pointer';
-
-    // Clicking the thread highlights the text in preview
-    div.addEventListener('click', (e) => {
-      if (e.target.closest('.btn-resolve') || e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') return;
-      openThreadInPanel(thread.id);
-    });
-
-    let metaHtml = `
-      <div class="thread-meta">
-        <span class="author">${esc(thread.createdByUsername || '?')}</span>
-        <span class="time">${new Date(thread.createdAt).toLocaleString()}</span>
-        <button class="btn-resolve" data-thread-id="${thread.id}" title="${thread.resolved ? 'Unresolve' : 'Resolve'}">${thread.resolved ? '\u21BB Unresolve' : '\u2713 Resolve'}</button>
-      </div>`;
-
-    if (thread.anchor) {
-      metaHtml += `<div class="anchor-info">Lines ${thread.anchor.startLine}–${thread.anchor.endLine}</div>`;
-    }
-
-    if (thread.resolved) {
-      const resolvedInfo = thread.resolvedBy || thread.resolvedAt
-        ? `<div class="resolved-badge">Resolved${thread.resolvedAt ? ' on ' + new Date(thread.resolvedAt).toLocaleDateString() : ''}</div>`
-        : '<div class="resolved-badge">Resolved</div>';
-      metaHtml += resolvedInfo;
-    }
-
-    let commentsHtml = '';
-    for (const c of (thread.comments || [])) {
-      commentsHtml += `
-        <div class="comment">
-          <div class="comment-author">${esc(c.username || 'user')}</div>
-          <div class="comment-time">${new Date(c.createdAt).toLocaleString()}</div>
-          <div class="comment-body">${esc(c.body)}</div>
-        </div>`;
-    }
-
-    div.innerHTML = metaHtml + '<div class="thread-replies">' + commentsHtml + '</div>';
-
-    const replySection = document.createElement('div');
-    replySection.style.padding = '0 12px 8px';
-    replySection.style.display = 'flex';
-    replySection.style.gap = '6px';
-
-    const replyInput = document.createElement('input');
-    replyInput.placeholder = thread.resolved ? 'Unresolve to reply...' : 'Reply...';
-    replyInput.disabled = thread.resolved;
-    replySection.style.padding = '0 12px 8px';
-    replySection.appendChild(replyInput);
-
-    const replyBtn = document.createElement('button');
-    replyBtn.textContent = 'Reply';
-    replyBtn.disabled = thread.resolved;
-    replyBtn.addEventListener('click', async () => {
-      if (!replyInput.value.trim() || thread.resolved) return;
-      try {
-        await api('POST', '/comment-lines', { threadId: thread.id, body: replyInput.value.trim() });
-        replyInput.value = '';
-        await loadThreads();
-      } catch (e) {
-        alert(e.message);
-      }
-    });
-    replySection.appendChild(replyBtn);
-    div.appendChild(replySection);
-
-    // Resolve button handler
-    const resolveBtn = div.querySelector('.btn-resolve');
-    resolveBtn.addEventListener('click', async (e) => {
-      e.stopPropagation();
-      try {
-        await api('POST', `/comments/threads/${thread.id}/resolve`);
-        await loadThreads();
-        updateCommentMarkers();
-      } catch (e) {
-        alert('Resolve failed: ' + e.message);
-      }
-    });
-
-    container.appendChild(div);
-  }
-}
+$('#btn-close-comments').addEventListener('click', () => $('#comments-panel').classList.add('hidden'));
 
 $('#show-resolved').addEventListener('change', (e) => {
   showResolved = e.target.checked;
@@ -1008,20 +1054,17 @@ $('#show-resolved').addEventListener('change', (e) => {
 
 $('#btn-add-thread').addEventListener('click', async () => {
   const body = $('#thread-body').value.trim();
-  if (!body || !currentDoc) return;
+  if (!body || !currentDoc || !canCommentCurrentDoc()) return;
 
-  // Get current cursor position in editor to anchor the comment
-  const cursorPos = editor.selectionStart;
-  const selectionEnd = editor.selectionEnd;
-  const textBefore = editor.value.substring(0, cursorPos);
+  const cursorPos = $('#editor').selectionStart;
+  const selectionEnd = $('#editor').selectionEnd;
+  const textBefore = $('#editor').value.substring(0, cursorPos);
   const startLine = textBefore.split('\n').length;
-
-  // If there's a selection in editor, get its text
   const selectedText = cursorPos !== selectionEnd
-    ? editor.value.substring(cursorPos, selectionEnd).trim()
+    ? $('#editor').value.substring(cursorPos, selectionEnd).trim()
     : '';
   const endLine = cursorPos !== selectionEnd
-    ? editor.value.substring(0, selectionEnd).split('\n').length
+    ? $('#editor').value.substring(0, selectionEnd).split('\n').length
     : startLine;
 
   try {
@@ -1034,7 +1077,7 @@ $('#btn-add-thread').addEventListener('click', async () => {
     await loadThreads();
     updateCommentMarkers();
   } catch (e) {
-    alert('Failed to create thread: ' + e.message);
+    alert(`Failed to create thread: ${e.message}`);
   }
 });
 
@@ -1045,12 +1088,5 @@ $('#thread-body').addEventListener('keydown', (e) => {
   }
 });
 
-/* ===== Utilities ===== */
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s;
-  return d.innerHTML;
-}
-
-/* ===== Init: Check Session ===== */
+initSelectionListener();
 initAuth();

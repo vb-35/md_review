@@ -79,6 +79,18 @@ def init_db():
         FOREIGN KEY (author_id) REFERENCES users(id)
     );
 
+    CREATE TABLE IF NOT EXISTS document_shares (
+        document_id TEXT NOT NULL,
+        user_id TEXT NOT NULL,
+        role TEXT NOT NULL,
+        shared_by TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (document_id, user_id),
+        FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE,
+        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+        FOREIGN KEY (shared_by) REFERENCES users(id)
+    );
+
     CREATE TABLE IF NOT EXISTS comment_threads (
         id TEXT PRIMARY KEY,
         document_id TEXT NOT NULL,
@@ -166,21 +178,59 @@ def get_user_by_id(user_id):
     return row_to_dict(row)
 
 def get_document_for_user(doc_id, user_id):
-    row = get_db().execute(
-        "SELECT * FROM documents WHERE id = ? AND owner_id = ?",
+    doc_row = get_db().execute(
+        "SELECT d.*, "
+        "owner.username AS owner_username, "
+        "updater.username AS updated_by_username, "
+        "locker.username AS lock_owner_username "
+        "FROM documents d "
+        "JOIN users owner ON owner.id = d.owner_id "
+        "LEFT JOIN users updater ON updater.id = d.updated_by "
+        "LEFT JOIN users locker ON locker.id = d.lock_owner_id "
+        "WHERE d.id = ?",
+        (doc_id,)
+    ).fetchone()
+    if not doc_row:
+        return None
+
+    doc = dict(doc_row)
+    if doc['owner_id'] == user_id:
+        doc['access_role'] = 'owner'
+        doc['is_owner'] = 1
+        doc['shared_by_username'] = None
+        return doc
+
+    share_row = get_db().execute(
+        "SELECT ds.role, ds.shared_by, sharer.username AS shared_by_username "
+        "FROM document_shares ds "
+        "JOIN users sharer ON sharer.id = ds.shared_by "
+        "WHERE ds.document_id = ? AND ds.user_id = ?",
         (doc_id, user_id)
     ).fetchone()
-    return row
+    if not share_row:
+        return None
+
+    doc['access_role'] = share_row['role']
+    doc['is_owner'] = 0
+    doc['shared_by'] = share_row['shared_by']
+    doc['shared_by_username'] = share_row['shared_by_username']
+    return doc
 
 def user_owns_thread(thread_id, user_id):
     row = get_db().execute(
-        "SELECT ct.id "
+        "SELECT ct.id, d.id AS document_id "
         "FROM comment_threads ct "
         "JOIN documents d ON d.id = ct.document_id "
-        "WHERE ct.id = ? AND d.owner_id = ?",
-        (thread_id, user_id)
+        "WHERE ct.id = ?",
+        (thread_id,)
     ).fetchone()
-    return row is not None
+    if not row:
+        return False
+    return get_document_for_user(row['document_id'], user_id) is not None
+
+def user_can_edit_document(doc_id, user_id):
+    row = get_document_for_user(doc_id, user_id)
+    return row is not None and row['access_role'] in ('owner', 'editor')
 
 def row_to_dict(row):
     if row is None:
