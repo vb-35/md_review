@@ -165,8 +165,16 @@ def create_thread():
         anchor = data['anchor']
         anchor_id = str(uuid.uuid4())
         conn.execute(
-            "INSERT INTO comment_anchors (id, thread_id, start_line, end_line, selected_text) VALUES (?, ?, ?, ?, ?)",
-            (anchor_id, thread_id, anchor.get('startLine', 1), anchor.get('endLine', 1), anchor.get('selectedText'))
+            "INSERT INTO comment_anchors (id, thread_id, start_line, end_line, start_offset, end_offset, selected_text) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                anchor_id,
+                thread_id,
+                anchor.get('startLine', 1),
+                anchor.get('endLine', 1),
+                anchor.get('startOffset'),
+                anchor.get('endOffset'),
+                anchor.get('selectedText')
+            )
         )
         conn.commit()
 
@@ -248,6 +256,8 @@ def list_threads(doc_id):
             thread['anchor'] = {
                 'startLine': a['start_line'],
                 'endLine': a['end_line'],
+                'startOffset': a.get('start_offset'),
+                'endOffset': a.get('end_offset'),
                 'selectedText': a.get('selected_text'),
             }
         else:

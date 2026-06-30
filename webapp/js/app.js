@@ -872,6 +872,153 @@ function updateCommentMarkers() {
   }
 }
 
+function getSelectionLine(node) {
+  let el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+  while (el && el !== $('#preview')) {
+    if (el.hasAttribute && el.hasAttribute('data-line')) {
+      return parseInt(el.getAttribute('data-line'), 10);
+    }
+    el = el.parentElement;
+  }
+  return null;
+}
+
+function getLineEndOffset(source, lineNumber) {
+  const nextLineStart = getLineStartOffset(source, lineNumber + 1);
+  return nextLineStart > 0 ? nextLineStart - 1 : source.length;
+}
+
+function getSourceOffsetsFromPreviewSelection(startLine, endLine, selectedText) {
+  const source = $('#editor').value || '';
+  if (!selectedText || !startLine || !endLine) return null;
+
+  const sliceStart = getLineStartOffset(source, startLine);
+  const sliceEnd = getLineEndOffset(source, endLine);
+  const sourceSlice = source.slice(sliceStart, sliceEnd);
+  let matchIndex = sourceSlice.indexOf(selectedText);
+
+  if (matchIndex === -1) {
+    const escaped = selectedText.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+    const match = sourceSlice.match(new RegExp(escaped));
+    matchIndex = match ? match.index : -1;
+  }
+
+  // ponytail: first match inside selected lines; add DOM-aware disambiguation only if duplicate phrases become a real problem.
+  if (matchIndex === -1) return null;
+  return {
+    startOffset: sliceStart + matchIndex,
+    endOffset: sliceStart + matchIndex + selectedText.length
+  };
+}
+
+function getAnchorSelectedText(anchor) {
+  if (anchor && anchor.selectedText && anchor.selectedText.trim()) return anchor.selectedText.trim();
+  if (!anchor || typeof anchor.startOffset !== 'number' || typeof anchor.endOffset !== 'number') return '';
+  return ($('#editor').value || '').slice(anchor.startOffset, anchor.endOffset).trim();
+}
+
+function getAnchorLabel(anchor) {
+  if (!anchor) return '';
+
+  const selectedText = getAnchorSelectedText(anchor);
+  const lineLabel = `Lines ${anchor.startLine}-${anchor.endLine}`;
+  if (!selectedText) {
+    return `<div class="anchor-info">${esc(lineLabel)}</div>`;
+  }
+
+  const words = selectedText.split(/\s+/).filter(Boolean);
+  const compact = words.length > 2
+    ? `${words[0]} ... ${words[words.length - 1]}`
+    : selectedText;
+
+  return `
+    <div class="anchor-info">
+      <div class="anchor-quote">${esc(compact)}</div>
+      <div class="anchor-lines">${esc(lineLabel)}</div>
+    </div>
+  `;
+}
+
+function clearThreadHighlights() {
+  document.querySelectorAll('.thread-text-highlight').forEach((el) => {
+    const parent = el.parentNode;
+    if (!parent) return;
+    while (el.firstChild) parent.insertBefore(el.firstChild, el);
+    parent.removeChild(el);
+    parent.normalize();
+  });
+}
+
+function getPreviewSelectionTextNodes(preview, anchor) {
+  const nodes = [];
+  const walker = document.createTreeWalker(preview, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      if (!node.textContent) return NodeFilter.FILTER_REJECT;
+      let el = node.parentElement;
+      while (el && el !== preview) {
+        if (el.hasAttribute && el.hasAttribute('data-line')) {
+          const line = parseInt(el.getAttribute('data-line'), 10);
+          return line >= anchor.startLine && line <= anchor.endLine
+            ? NodeFilter.FILTER_ACCEPT
+            : NodeFilter.FILTER_REJECT;
+        }
+        el = el.parentElement;
+      }
+      return NodeFilter.FILTER_REJECT;
+    }
+  });
+
+  let node;
+  while ((node = walker.nextNode())) nodes.push(node);
+  return nodes;
+}
+
+function highlightPreviewText(anchor) {
+  const preview = $('#preview');
+  const textToFind = getAnchorSelectedText(anchor);
+  if (!textToFind || !anchor || !anchor.startLine) return false;
+
+  const textNodes = getPreviewSelectionTextNodes(preview, anchor);
+  if (!textNodes.length) return false;
+
+  const fullText = textNodes.map((node) => node.textContent).join('');
+  const matchIndex = fullText.indexOf(textToFind);
+  if (matchIndex === -1) return false;
+
+  let remainingStart = matchIndex;
+  let remainingEnd = matchIndex + textToFind.length;
+  const spans = [];
+
+  for (const node of textNodes) {
+    const len = node.textContent.length;
+    const startInNode = Math.max(0, remainingStart);
+    const endInNode = Math.min(len, remainingEnd);
+
+    if (startInNode < endInNode) {
+      let target = node;
+      if (startInNode > 0) target = target.splitText(startInNode);
+      if (endInNode - startInNode < target.textContent.length) {
+        target.splitText(endInNode - startInNode);
+      }
+
+      const span = document.createElement('span');
+      span.className = 'thread-text-highlight';
+      target.parentNode.insertBefore(span, target);
+      span.appendChild(target);
+      spans.push(span);
+    }
+
+    remainingStart -= len;
+    remainingEnd -= len;
+    if (remainingEnd <= 0) break;
+  }
+
+  if (!spans.length) return false;
+  spans[0].scrollIntoView({ behavior: 'smooth', block: 'center' });
+  setTimeout(clearThreadHighlights, 3000);
+  return true;
+}
+
 function renderPreview() {
   if (!currentDoc) return;
   let md = $('#editor').value || '';
@@ -885,19 +1032,7 @@ function renderPreview() {
   updateCommentMarkers();
 }
 
-function findLineFromSelection(range) {
-  const node = range.startContainer;
-  let el = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
-  while (el && el !== $('#preview')) {
-    if (el.hasAttribute && el.hasAttribute('data-line')) {
-      return parseInt(el.getAttribute('data-line'), 10);
-    }
-    el = el.parentElement;
-  }
-  return null;
-}
-
-function showCommentPrompt(range, line) {
+function showCommentPrompt(range, anchor) {
   const existing = document.querySelector('.selection-comment-prompt');
   if (existing) existing.remove();
 
@@ -925,12 +1060,19 @@ function showCommentPrompt(range, line) {
 
     const selection = window.getSelection();
     const selectedText = selection ? selection.toString().trim() : '';
+    const offsets = getSourceOffsetsFromPreviewSelection(anchor.startLine, anchor.endLine, selectedText);
 
     try {
       await api('POST', '/comments/threads', {
         documentId: currentDoc.id,
         body: body.trim(),
-        anchor: { startLine: line, endLine: line, selectedText }
+        anchor: {
+          startLine: anchor.startLine,
+          endLine: anchor.endLine,
+          startOffset: offsets ? offsets.startOffset : null,
+          endOffset: offsets ? offsets.endOffset : null,
+          selectedText
+        }
       });
       await loadThreads();
       updateCommentMarkers();
@@ -963,9 +1105,10 @@ function initSelectionListener() {
       if (!preview.contains(range.commonAncestorContainer)) return;
       const text = selection.toString().trim();
       if (!text || text.length < 2) return;
-      const line = findLineFromSelection(range);
-      if (!line) return;
-      showCommentPrompt(range, line);
+      const startLine = getSelectionLine(range.startContainer);
+      const endLine = getSelectionLine(range.endContainer);
+      if (!startLine || !endLine) return;
+      showCommentPrompt(range, { startLine, endLine });
     }, 200);
   });
 }
@@ -980,32 +1123,11 @@ function highlightThreadInPreview(threadId) {
   const thread = threads.find((t) => t.id === threadId);
   if (!thread) return;
 
-  document.querySelectorAll('.thread-text-highlight').forEach((el) => {
-    el.classList.remove('thread-text-highlight');
-  });
+  clearThreadHighlights();
+
+  if (thread.anchor && highlightPreviewText(thread.anchor)) return;
 
   const preview = $('#preview');
-  if (thread.anchor && thread.anchor.selectedText) {
-    const textToFind = thread.anchor.selectedText.trim();
-    if (textToFind.length > 2) {
-      const walker = document.createTreeWalker(preview, NodeFilter.SHOW_TEXT, null);
-      let textNode;
-      while ((textNode = walker.nextNode())) {
-        if (textNode.textContent.trim() !== textToFind) continue;
-        let target = textNode.parentElement;
-        while (target && target !== preview) {
-          if (target.hasAttribute && target.hasAttribute('data-line')) {
-            target.classList.add('thread-text-highlight');
-            target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-            setTimeout(() => target.classList.remove('thread-text-highlight'), 3000);
-            return;
-          }
-          target = target.parentElement;
-        }
-      }
-    }
-  }
-
   if (thread.anchor && thread.anchor.startLine) {
     const target = preview.querySelector(`[data-line="${thread.anchor.startLine}"]`);
     if (target) {
@@ -1098,7 +1220,7 @@ function renderThreads() {
         <span class="time">${esc(formatDate(thread.createdAt))}</span>
         <button class="btn-resolve" ${!canResolve ? 'disabled' : ''}>${thread.resolved ? 'Unresolve' : 'Resolve'}</button>
       </div>
-      ${thread.anchor ? `<div class="anchor-info">Lines ${thread.anchor.startLine}-${thread.anchor.endLine}</div>` : ''}
+      ${getAnchorLabel(thread.anchor)}
       ${thread.resolved ? `<div class="resolved-badge">Resolved${thread.resolvedAt ? ` on ${esc(new Date(thread.resolvedAt).toLocaleDateString())}` : ''}</div>` : ''}
       <div class="thread-replies">
         ${(thread.comments || []).map((c) => `
@@ -1335,6 +1457,8 @@ $('#btn-add-thread').addEventListener('click', async () => {
   const selectionEnd = $('#editor').selectionEnd;
   const textBefore = $('#editor').value.substring(0, cursorPos);
   const startLine = textBefore.split('\n').length;
+  const startOffset = cursorPos;
+  const endOffset = selectionEnd;
   const selectedText = cursorPos !== selectionEnd
     ? $('#editor').value.substring(cursorPos, selectionEnd).trim()
     : '';
@@ -1346,7 +1470,7 @@ $('#btn-add-thread').addEventListener('click', async () => {
     await api('POST', '/comments/threads', {
       documentId: currentDoc.id,
       body,
-      anchor: { startLine, endLine, selectedText }
+      anchor: { startLine, endLine, startOffset, endOffset, selectedText }
     });
     $('#thread-body').value = '';
     await loadThreads();

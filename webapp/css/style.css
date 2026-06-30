@@ -719,6 +719,15 @@ select {
   color: var(--fg-dim);
 }
 
+.thread .anchor-quote {
+  color: var(--fg);
+  font-weight: 600;
+}
+
+.thread .anchor-lines {
+  margin-top: 2px;
+}
+
 .resolved-badge {
   color: var(--green);
 }

@@ -147,13 +147,22 @@ def test_md_table():
     assert '<table>' in h and '<th>' in h and '<td>' in h
     print("PASS: md_table")
 
+def test_comment_anchor_offsets_schema():
+    row = get_db().execute("PRAGMA table_info(comment_anchors)").fetchall()
+    cols = {r['name'] for r in row}
+    assert 'start_offset' in cols
+    assert 'end_offset' in cols
+    assert 'selected_text' in cols
+    print("PASS: comment_anchor_offsets_schema")
+
 def main():
     tests = [test_init_db, test_ensure_user, test_doc_crud, test_doc_overwrite,
              test_permanent_admin_token,
              test_diff_add_change_del, test_diff_empty_base, test_diff_word_segments,
              test_diff_punctuation_segments, test_diff_whitespace_segments,
              test_diff_surplus_lines, test_md_headings,
-             test_md_list, test_md_code, test_md_inline_math, test_md_table]
+             test_md_list, test_md_code, test_md_inline_math, test_md_table,
+             test_comment_anchor_offsets_schema]
     ok = 0; fail = 0
     with app.app_context():
         for t in tests:

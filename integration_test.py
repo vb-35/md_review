@@ -193,9 +193,26 @@ try:
     assert r.get_json()['markdown'] == '# Editor Updated'
     print("PASS: editor_update_doc")
 
-    r = editor_client.post('/api/comments/threads', json={'documentId': doc_id, 'anchor': {'startLine': 1, 'endLine': 1}})
+    r = editor_client.post('/api/comments/threads', json={
+        'documentId': doc_id,
+        'anchor': {
+            'startLine': 1,
+            'endLine': 1,
+            'startOffset': 2,
+            'endOffset': 8,
+            'selectedText': 'Editor'
+        }
+    })
     assert r.status_code == 201
     tid = r.get_json()['id']
+    listed = editor_client.get(f'/api/documents/{doc_id}/threads')
+    assert listed.status_code == 200
+    anchor = next(t['anchor'] for t in listed.get_json() if t['id'] == tid)
+    assert anchor['startLine'] == 1
+    assert anchor['endLine'] == 1
+    assert anchor['startOffset'] == 2
+    assert anchor['endOffset'] == 8
+    assert anchor['selectedText'] == 'Editor'
     r2 = editor_client.post('/api/comment-lines', json={'threadId': tid, 'body': 'Great work'})
     assert r2.status_code == 201
     r3 = editor_client.post(f'/api/comments/threads/{tid}/resolve')
