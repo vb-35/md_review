@@ -303,7 +303,7 @@ function updateEditorPermissions() {
   }
 }
 
-function preprocessMath(md) {
+function preprocessMath(md, lineOffset = 0) {
   const source = md;
   mathPlaceholders = {};
   placeholderCounter = 0;
@@ -313,7 +313,7 @@ function preprocessMath(md) {
     mathPlaceholders[key] = {
       type: 'block',
       math: math.trim(),
-      line: getLineNumberAtOffset(source, offset)
+      line: lineOffset + getLineNumberAtOffset(source, offset)
     };
     return `\n\n${key}\n\n`;
   });
@@ -323,7 +323,7 @@ function preprocessMath(md) {
     mathPlaceholders[key] = {
       type: 'inline',
       math,
-      line: getLineNumberAtOffset(source, offset)
+      line: lineOffset + getLineNumberAtOffset(source, offset)
     };
     return ` ${key} `;
   });
@@ -363,7 +363,7 @@ function renderHighlight(container) {
   });
 }
 
-function annotateLines(container, source) {
+function annotateLines(container, source, lineOffset = 0) {
   const lines = source.split('\n');
   const blockEls = container.querySelectorAll('h1, h2, h3, h4, h5, h6, p, pre, blockquote, li, td, tr, table, ul, ol, div.math-block, hr');
   const processed = new Set();
@@ -383,7 +383,7 @@ function annotateLines(container, source) {
       const searchText = content.substring(0, 50);
       for (let i = 0; i < lines.length; i += 1) {
         if (lines[i].includes(searchText)) {
-          lineNumber = i + 1;
+          lineNumber = lineOffset + i + 1;
           break;
         }
       }
@@ -739,14 +739,21 @@ function updatePreview() {
     $('#preview').innerHTML = '';
     return;
   }
-  let md = $('#editor').value || '';
-  md = preprocessMath(md);
+  const source = $('#editor').value || '';
+  const parsed = window.ScientificPreview
+    ? window.ScientificPreview.parseDocument(source)
+    : { metadata: {}, body: source, bodyLineOffset: 0 };
+  let md = preprocessMath(parsed.body, parsed.bodyLineOffset);
   const html = marked.parse(md);
-  const finalHtml = postprocessMath(html);
+  const finalBodyHtml = postprocessMath(html);
+  const scientific = window.ScientificPreview
+    ? window.ScientificPreview.renderDocument(parsed, finalBodyHtml)
+    : { headerHtml: '', bodyHtml: finalBodyHtml, referencesHtml: '' };
   const preview = $('#preview');
-  preview.innerHTML = finalHtml;
-  annotateLines(preview, $('#editor').value || '');
-  renderHighlight(preview);
+  preview.innerHTML = `${scientific.headerHtml}<div class="paper-body">${scientific.bodyHtml}</div>${scientific.referencesHtml}`;
+  const bodyContainer = preview.querySelector('.paper-body') || preview;
+  annotateLines(bodyContainer, parsed.body, parsed.bodyLineOffset);
+  renderHighlight(bodyContainer);
   updateCommentMarkers();
 }
 

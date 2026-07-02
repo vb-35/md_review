@@ -1,0 +1,47 @@
+[
+  {
+    "id": "chicago-author-date",
+    "title": "Chicago Manual of Style 18th edition (author-date)",
+    "journals": []
+  },
+  {
+    "id": "apa",
+    "title": "American Psychological Association 7th edition",
+    "journals": []
+  },
+  {
+    "id": "ieee",
+    "title": "IEEE",
+    "journals": ["IEEE Transactions", "IEEE Access", "IEEE journals"]
+  },
+  {
+    "id": "vancouver",
+    "title": "Vancouver",
+    "journals": ["ICMJE", "biomedical journals"]
+  },
+  {
+    "id": "nature",
+    "title": "Nature",
+    "journals": ["Nature", "Nature journals"]
+  },
+  {
+    "id": "science",
+    "title": "Science",
+    "journals": ["Science", "Science Advances"]
+  },
+  {
+    "id": "cell",
+    "title": "Cell",
+    "journals": ["Cell", "Cell Press"]
+  },
+  {
+    "id": "american-chemical-society",
+    "title": "American Chemical Society",
+    "journals": ["ACS", "Journal of the American Chemical Society", "ACS journals"]
+  },
+  {
+    "id": "elsevier-harvard",
+    "title": "Elsevier - Harvard",
+    "journals": ["Elsevier journals"]
+  }
+]
