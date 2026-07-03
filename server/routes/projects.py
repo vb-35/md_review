@@ -1,15 +1,17 @@
 import json
 import os
 import shutil
+import tempfile
 import uuid
 from datetime import datetime, timezone
 from urllib.parse import quote
 
-from flask import Blueprint, current_app, jsonify, request, send_file, session
+from flask import Blueprint, after_this_request, current_app, jsonify, request, send_file, session
 
 from models import get_db, get_project_for_user
 from utils.diff import compute_diff
 from utils.repo_storage import (
+    build_project_archive,
     default_project_path,
     delete_project_file,
     delete_project_root,
@@ -207,6 +209,30 @@ def get_project(project_id):
     if error:
         return error
     return jsonify(project_to_api(row))
+
+
+@project_bp.route('/projects/<project_id>/download', methods=['GET'])
+@require_auth
+def download_project(project_id):
+    row, error = get_accessible_project_or_404(project_id, session['user_id'])
+    if error:
+        return error
+
+    project_root = ensure_project_repo(row['project_path'])
+    archive_name = f"{default_project_path(project_id, row['title']).split('/')[-1]}.tar.gz"
+    archive_handle = tempfile.NamedTemporaryFile(prefix='md_review_project_', suffix='.tar.gz', delete=False)
+    archive_handle.close()
+    archive_path = build_project_archive(project_root, archive_handle.name, project_root.name)
+
+    @after_this_request
+    def cleanup_archive(response):
+        try:
+            os.unlink(archive_path)
+        except FileNotFoundError:
+            pass
+        return response
+
+    return send_file(archive_path, as_attachment=True, download_name=archive_name)
 
 
 @project_bp.route('/projects/<project_id>', methods=['DELETE'])

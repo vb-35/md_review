@@ -73,7 +73,7 @@
       ? 'You own this project. You can lock, edit files, delete it, and manage sharing.'
       : state.currentProject.accessRole === 'editor'
         ? `You can edit this project after taking the lock. Shared by ${state.currentProject.sharedByUsername || 'unknown'}.`
-        : `You can browse files and comment on Markdown files, but editing and sharing are disabled. Shared by ${state.currentProject.sharedByUsername || 'unknown'}.`;
+        : `You can browse files, comment on Markdown files, and download the full repo history. Shared by ${state.currentProject.sharedByUsername || 'unknown'}.`;
 
     const fileList = $('#project-files');
     if (!state.projectFiles.length) {
@@ -105,6 +105,11 @@
 
     $('#share-card').classList.toggle('hidden', !canManageShares());
     renderShares();
+  }
+
+  function downloadProjectRepo() {
+    if (!state.currentProject) return;
+    window.location.href = `${App.constants.API}/projects/${state.currentProject.id}/download`;
   }
 
   function renderShares() {
@@ -254,6 +259,7 @@
 
   App.projects = {
     compareSelectedVersions,
+    downloadProjectRepo,
     handleFileAction,
     loadProjects,
     loadVersions,

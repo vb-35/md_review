@@ -407,6 +407,10 @@ function wireEvents() {
     updateHeader();
   });
 
+  $('#btn-download-repo').addEventListener('click', () => {
+    window.App.projects.downloadProjectRepo();
+  });
+
   $('#btn-new-file').addEventListener('click', async () => {
     if (!state.currentProject) return;
     if (!canEditCurrentProject()) return alert('Edit access required.');

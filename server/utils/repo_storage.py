@@ -3,6 +3,7 @@ import os
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -85,6 +86,16 @@ def ensure_project_repo(project_path):
     if not git_dir.exists():
         subprocess.run(['git', '-C', str(project_root), 'init'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return project_root
+
+
+def build_project_archive(project_root, archive_path, root_name=None):
+    project_root = Path(project_root).resolve()
+    archive_path = Path(archive_path).resolve()
+    root_name = root_name or project_root.name
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(archive_path, 'w:gz') as archive:
+        archive.add(project_root, arcname=root_name)
+    return archive_path
 
 
 def delete_project_root(project_path):

@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Quick integration test."""
-import json
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
@@ -163,6 +163,34 @@ try:
     response = other_client.get(f'/api/projects/{project_id}')
     assert response.status_code == 404
     print("PASS: outsider_blocked")
+
+    response = viewer_client.get(f'/api/projects/{project_id}/download')
+    assert response.status_code == 200, response.data
+    assert response.headers['Content-Disposition'].endswith('.tar.gz')
+    bundle_path = os.path.join(TMP_DIR, 'project.tar.gz')
+    with open(bundle_path, 'wb') as handle:
+        handle.write(response.data)
+    extract_dir = os.path.join(TMP_DIR, 'downloaded')
+    os.makedirs(extract_dir, exist_ok=True)
+    with tarfile.open(bundle_path, 'r:gz') as archive:
+        archive.extractall(extract_dir)
+        members = archive.getnames()
+    repo_root = os.path.join(extract_dir, members[0].split('/')[0])
+    assert os.path.exists(os.path.join(repo_root, '.git', 'HEAD'))
+    commit_count = subprocess.run(
+        ['git', '-C', repo_root, 'rev-list', '--count', 'HEAD'],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE
+    ).stdout.strip()
+    assert commit_count == '6'
+    with open(os.path.join(repo_root, 'docs', 'final.md'), 'r', encoding='utf-8') as handle:
+        assert handle.read() == '# Start\n'
+    print("PASS: download_project_repo")
+
+    response = other_client.get(f'/api/projects/{project_id}/download')
+    assert response.status_code == 404
+    print("PASS: outsider_download_blocked")
 
     response = client.delete(f'/api/projects/{project_id}')
     assert response.status_code == 200

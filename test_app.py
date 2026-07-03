@@ -68,6 +68,14 @@ def test_invalid_identifier_rejected():
     print("PASS: invalid_identifier_rejected")
 
 
+def test_index_exposes_repo_actions():
+    response = CLIENT.get('/')
+    assert response.status_code == 200
+    html = response.get_data(as_text=True)
+    assert 'btn-download-repo' in html
+    print("PASS: index_exposes_repo_actions")
+
+
 def test_diff_and_renderer():
     diff = compute_diff("alpha beta\n", "alpha gamma\n")
     removed = next(row for row in diff if row['type'] == 'removed')
@@ -86,5 +94,6 @@ if __name__ == '__main__':
     test_ensure_user()
     test_identifier_login_flow()
     test_invalid_identifier_rejected()
+    test_index_exposes_repo_actions()
     test_diff_and_renderer()
     print("ALL PASS")
