@@ -10,6 +10,7 @@ const SETTINGS_KEY_THEME = 'md-review.theme';
 const SETTINGS_KEY_SYNC_VIEW = 'md-review.sync-view';
 const SETTINGS_KEY_JUSTIFY_PREVIEW = 'md-review.justify-preview';
 const SETTINGS_KEY_VIEW_MODE = 'md-review.view-mode';
+const AUTH_KEY_IDENTIFIER = 'md-review.identifier';
 const HIGHLIGHT_THEME_DARK = 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css';
 const HIGHLIGHT_THEME_LIGHT = 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css';
 
@@ -40,7 +41,6 @@ const state = {
   selectedHeadId: null,
   editing: false,
   showResolved: false,
-  passwordLoginEnabled: true,
   currentView: 'dashboard',
   previewTimer: null,
   mathPlaceholders: {},
@@ -99,10 +99,19 @@ function toggleSettingsPanel(forceOpen) {
 }
 
 function headers() {
-  return {
-    'Content-Type': 'application/json',
-    ...(state.currentUser ? { 'X-User-Id': state.currentUser.id } : {})
-  };
+  return { 'Content-Type': 'application/json' };
+}
+
+function getStoredIdentifier() {
+  return localStorage.getItem(AUTH_KEY_IDENTIFIER) || '';
+}
+
+function storeIdentifier(username) {
+  localStorage.setItem(AUTH_KEY_IDENTIFIER, username);
+}
+
+function clearStoredIdentifier() {
+  localStorage.removeItem(AUTH_KEY_IDENTIFIER);
 }
 
 async function api(method, path, body) {
@@ -126,7 +135,6 @@ async function uploadProjectAsset(projectId, file, dirPath = '') {
   if (dirPath) body.append('path', dirPath);
   const res = await fetch(`${API}/projects/${projectId}/assets`, {
     method: 'POST',
-    headers: state.currentUser ? { 'X-User-Id': state.currentUser.id } : {},
     credentials: 'include',
     body
   });
@@ -207,21 +215,13 @@ function showLoginScreen(message = '') {
   closePanels();
   $('#login-screen').classList.remove('hidden');
   const hint = $('#login-hint');
-  const form = $('#login-form');
   const error = $('#login-error');
-
-  if (state.passwordLoginEnabled) {
-    form.classList.remove('hidden');
-    hint.textContent = message || '';
-    hint.classList.toggle('hidden', !message);
-  } else {
-    form.classList.add('hidden');
-    hint.textContent = message || 'Waiting for a trusted upstream user identity.';
-    hint.classList.remove('hidden');
-  }
+  hint.textContent = message || 'Enter any identifier for this browser.';
+  hint.classList.remove('hidden');
 
   error.classList.add('hidden');
   error.textContent = '';
+  $('#login-username').value = getStoredIdentifier();
 }
 
 function showDashboard() {
@@ -325,10 +325,12 @@ window.App = {
     canEditCurrentProject,
     canManageShares,
     capitalize,
+    clearStoredIdentifier,
     closePanels,
     currentCommentContext,
     esc,
     formatDate,
+    getStoredIdentifier,
     holdsCurrentLock,
     insertAtCursor,
     loadSettings,
@@ -338,6 +340,7 @@ window.App = {
     showEditor,
     showLoginScreen,
     showTopbar,
+    storeIdentifier,
     toggleSettingsPanel,
     updateEditorPermissions,
     updateHeader
@@ -351,9 +354,9 @@ function wireEvents() {
   $('#login-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const username = $('#login-username').value.trim();
-    const password = $('#login-password').value;
     try {
-      const payload = await api('POST', '/auth/login', { username, password });
+      const payload = await api('POST', '/auth/login', { username });
+      storeIdentifier(username);
       state.currentUser = payload.user;
       showTopbar();
       showDashboard();
@@ -366,6 +369,7 @@ function wireEvents() {
 
   $('#btn-logout').addEventListener('click', async () => {
     await api('POST', '/auth/logout');
+    clearStoredIdentifier();
     state.currentUser = null;
     state.currentProject = null;
     resetEditorState();
@@ -589,12 +593,23 @@ async function bootstrap() {
   try {
     const payload = await api('GET', '/auth/bootstrap');
     state.currentUser = payload.user;
-    state.passwordLoginEnabled = payload.passwordLoginEnabled;
     showTopbar();
     showDashboard();
     await window.App.projects.loadProjects();
   } catch (error) {
-    state.passwordLoginEnabled = !/disabled/i.test(error.message);
+    const username = getStoredIdentifier().trim();
+    if (username) {
+      try {
+        const payload = await api('POST', '/auth/login', { username });
+        state.currentUser = payload.user;
+        showTopbar();
+        showDashboard();
+        await window.App.projects.loadProjects();
+        return;
+      } catch {
+        clearStoredIdentifier();
+      }
+    }
     showLoginScreen();
   }
 }

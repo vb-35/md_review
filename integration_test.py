@@ -18,8 +18,6 @@ TMP_DIR = tempfile.mkdtemp(prefix='md_review_test_')
 Config.DATABASE = os.path.join(TMP_DIR, 'test.db')
 Config.SESSION_FILE_DIR = os.path.join(TMP_DIR, 'sessions')
 Config.SECRET_KEY = 'test-secret'
-Config.AUTH_MODE = 'pam'
-Config.LOCAL_AUTH = 'on'
 Config.REPO_ROOT = os.path.join(TMP_DIR, 'storage')
 os.makedirs(Config.SESSION_FILE_DIR, exist_ok=True)
 os.makedirs(Config.REPO_ROOT, exist_ok=True)
@@ -37,7 +35,7 @@ def cleanup():
 
 
 def login(test_client, username):
-    response = test_client.post('/api/auth/login', json={'username': username, 'password': 'abc'})
+    response = test_client.post('/api/auth/login', json={'username': username})
     assert response.status_code == 200, response.data
 
 

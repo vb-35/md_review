@@ -1,17 +1,13 @@
 #!/usr/bin/env python3
 import argparse
 import getpass
-import io
 import os
-import pwd
 import secrets
 import shutil
 import socket
 import subprocess
 import sys
 import time
-from contextlib import redirect_stdout
-from urllib.parse import quote
 
 
 def resolve_root():
@@ -26,24 +22,8 @@ def resolve_root():
     raise SystemExit('Set MD_REVIEW_ROOT to the project root')
 
 
-def load_token_issuer(root_dir):
-    server_dir = os.path.join(root_dir, 'server')
-    if server_dir not in sys.path:
-        sys.path.insert(0, server_dir)
-    from utils.login_tokens import issue_login_token
-    return issue_login_token
-
-
 def current_username():
     return getpass.getuser()
-
-
-def is_root():
-    return hasattr(os, 'geteuid') and os.geteuid() == 0
-
-
-def validate_local_user(username):
-    pwd.getpwnam(username)
 
 
 def env_flag(name, default):
@@ -102,10 +82,6 @@ def threads():
     return env_flag('THREADS', '4')
 
 
-def token_login_max_age():
-    return env_flag('TOKEN_LOGIN_MAX_AGE_SECONDS', '120')
-
-
 def ensure_secret_file():
     secret_path = secret_file()
     if not os.path.exists(secret_path):
@@ -117,9 +93,6 @@ def ensure_secret_file():
 
 
 def read_secret():
-    token_secret = os.environ.get('TOKEN_LOGIN_SECRET', '').strip()
-    if token_secret:
-        return token_secret
     secret_path = ensure_secret_file()
     with open(secret_path, encoding='utf-8') as handle:
         return handle.read().strip()
@@ -191,19 +164,11 @@ def ensure_venv():
 
 def runtime_env():
     secret = os.environ.get('SECRET_KEY', '').strip() or read_secret()
-    token_secret = os.environ.get('TOKEN_LOGIN_SECRET', '').strip() or secret
     env = os.environ.copy()
     env.update({
         'SECRET_KEY': secret,
         'DATABASE_PATH': database_path(),
         'SESSION_FILE_DIR': session_file_dir(),
-        'AUTH_MODE': env_flag('AUTH_MODE', 'trusted_user'),
-        'TRUSTED_USER_HEADER': env_flag('TRUSTED_USER_HEADER', 'X-Remote-User'),
-        'TRUSTED_USER_LOCAL_ONLY': env_flag('TRUSTED_USER_LOCAL_ONLY', 'on'),
-        'TOKEN_LOGIN_SECRET': token_secret,
-        'TOKEN_LOGIN_MAX_AGE_SECONDS': token_login_max_age(),
-        'LOCAL_AUTH': env_flag('LOCAL_AUTH', 'off'),
-        'PAM_SERVICE': env_flag('PAM_SERVICE', 'login'),
         'APP_BASE_PATH': app_base_path(),
     })
     return env
@@ -214,21 +179,7 @@ def print_running_info(pid):
     print(f'Web app: http://{server_ip()}:{port()}{url_path()}')
     print(f'SSH tunnel: ssh -L {port()}:127.0.0.1:{port()} {current_username()}@{tunnel_host()}')
     print(f'Browser via tunnel: http://127.0.0.1:{port()}{url_path()}')
-    cmd_login_url(type('Args', (), {'username': None})())
     print(f'Logs: {log_file()}')
-
-
-def cmd_token(args):
-    username = args.username or current_username()
-    if args.username and username != current_username() and not is_root():
-        raise SystemExit('Only root may generate a token for another user')
-    try:
-        validate_local_user(username)
-    except KeyError:
-        raise SystemExit(f'Unknown local user: {username}')
-    os.environ.setdefault('TOKEN_LOGIN_SECRET', read_secret())
-    issue_login_token = load_token_issuer(root_dir())
-    print(issue_login_token(username))
 
 
 def cmd_start(args):
@@ -304,28 +255,9 @@ def cmd_status(args):
         subprocess.call(['ss', '-ltnp'])
 
 
-def cmd_login_url(args):
-    username = args.username or current_username()
-    token_args = type('Args', (), {'username': username})()
-    token_buffer = io.StringIO()
-    with redirect_stdout(token_buffer):
-        cmd_token(token_args)
-    host = env_flag('LOGIN_HOST', '127.0.0.1')
-    print('Open this URL in the browser that is using your SSH tunnel:')
-    print(f"http://{host}:{port()}{url_path()}?token={quote(token_buffer.getvalue().strip())}")
-
-
 def build_parser():
     parser = argparse.ArgumentParser(prog='md-reviewctl')
     subparsers = parser.add_subparsers(dest='command', required=True)
-
-    token_parser = subparsers.add_parser('token')
-    token_parser.add_argument('username', nargs='?')
-    token_parser.set_defaults(func=cmd_token)
-
-    login_url_parser = subparsers.add_parser('login-url')
-    login_url_parser.add_argument('username', nargs='?')
-    login_url_parser.set_defaults(func=cmd_login_url)
 
     start_parser = subparsers.add_parser('start')
     start_parser.set_defaults(func=cmd_start)

@@ -1,18 +1,11 @@
-import ipaddress
 import re
 
 from flask import Blueprint, request, jsonify, session
 
-from config import Config
-from utils.pam_auth import authenticate
-from utils.login_tokens import verify_login_token
 from models import ensure_user
 
 auth_bp = Blueprint('auth', __name__)
 USERNAME_RE = re.compile(r'^[A-Za-z0-9._@-]{1,128}$')
-
-def is_password_login_enabled():
-    return Config.AUTH_MODE in ('pam', 'mixed')
 
 def current_user_payload():
     return {'id': session['user_id'], 'username': session['username']}
@@ -23,26 +16,6 @@ def login_user(username):
     session['username'] = username
     return {'id': uid, 'username': username}
 
-def login_user_from_token(token):
-    token_payload, error = verify_login_token(token)
-    if error or not token_payload:
-        return None, error
-
-    username = normalize_trusted_username(token_payload['username'])
-    if not username:
-        return None, 'Invalid login token'
-
-    return login_user(username), None
-
-def is_local_request():
-    remote_addr = (request.remote_addr or '').strip()
-    if not remote_addr:
-        return False
-    try:
-        return ipaddress.ip_address(remote_addr).is_loopback
-    except ValueError:
-        return remote_addr == 'localhost'
-
 def normalize_trusted_username(raw_username):
     username = (raw_username or '').strip()
     if not username:
@@ -51,84 +24,19 @@ def normalize_trusted_username(raw_username):
         return None
     return username
 
-def get_trusted_username():
-    if Config.AUTH_MODE not in ('trusted_user', 'mixed'):
-        return None, 'Trusted-user auth is disabled'
-    if Config.TRUSTED_USER_LOCAL_ONLY and not is_local_request():
-        return None, 'Trusted-user auth is only accepted from local requests'
-    username = normalize_trusted_username(request.headers.get(Config.TRUSTED_USER_HEADER))
-    if not username:
-        return None, f'Missing trusted user header {Config.TRUSTED_USER_HEADER}'
-    return username, None
-
 @auth_bp.route('/login', methods=['POST'])
 def login():
-    if not is_password_login_enabled():
-        return jsonify({'error': 'Password login is disabled', 'authMode': Config.AUTH_MODE}), 403
-
     data = request.get_json()
-    if not data or 'username' not in data or 'password' not in data:
-        return jsonify({'error': 'username and password required'}), 400
-
-    result = authenticate(data['username'], data['password'])
-    if not result['success']:
-        return jsonify({'error': 'Invalid credentials'}), 401
-
-    return jsonify({'user': login_user(data['username'])})
+    username = normalize_trusted_username((data or {}).get('username'))
+    if not username:
+        return jsonify({'error': 'Valid username required'}), 400
+    return jsonify({'user': login_user(username)})
 
 @auth_bp.route('/bootstrap', methods=['GET'])
 def bootstrap():
     if 'user_id' in session:
-        return jsonify({
-            'user': current_user_payload(),
-            'authMode': Config.AUTH_MODE,
-            'passwordLoginEnabled': is_password_login_enabled()
-        })
-
-    token = (request.args.get('token') or '').strip()
-    if token:
-        user, error = login_user_from_token(token)
-        if user:
-            return jsonify({
-                'user': user,
-                'authMode': Config.AUTH_MODE,
-                'passwordLoginEnabled': is_password_login_enabled()
-            })
-        return jsonify({
-            'error': error or 'Invalid login token',
-            'authMode': Config.AUTH_MODE,
-            'passwordLoginEnabled': is_password_login_enabled()
-        }), 401
-
-    username, error = get_trusted_username()
-    if username:
-        return jsonify({
-            'user': login_user(username),
-            'authMode': Config.AUTH_MODE,
-            'passwordLoginEnabled': is_password_login_enabled()
-        })
-
-    return jsonify({
-        'error': error or 'Not authenticated',
-        'authMode': Config.AUTH_MODE,
-        'passwordLoginEnabled': is_password_login_enabled()
-    }), 401
-
-@auth_bp.route('/token-login', methods=['POST'])
-def token_login():
-    data = request.get_json()
-    if not data or 'token' not in data:
-        return jsonify({'error': 'token required'}), 400
-
-    user, error = login_user_from_token(data['token'])
-    if not user:
-        return jsonify({'error': error or 'Invalid login token'}), 401
-
-    return jsonify({
-        'user': user,
-        'authMode': Config.AUTH_MODE,
-        'passwordLoginEnabled': is_password_login_enabled()
-    })
+        return jsonify({'user': current_user_payload()})
+    return jsonify({'error': 'Not authenticated'}), 401
 
 @auth_bp.route('/logout', methods=['POST'])
 def logout():
