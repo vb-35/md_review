@@ -9,6 +9,7 @@ const API = (() => {
 const SETTINGS_KEY_THEME = 'md-review.theme';
 const SETTINGS_KEY_SYNC_VIEW = 'md-review.sync-view';
 const SETTINGS_KEY_JUSTIFY_PREVIEW = 'md-review.justify-preview';
+const SETTINGS_KEY_VIEW_MODE = 'md-review.view-mode';
 const HIGHLIGHT_THEME_DARK = 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css';
 const HIGHLIGHT_THEME_LIGHT = 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css';
 
@@ -37,10 +38,12 @@ const $ = (sel) => document.querySelector(sel);
 
 function loadSettings() {
   const theme = localStorage.getItem(SETTINGS_KEY_THEME);
+  const viewMode = localStorage.getItem(SETTINGS_KEY_VIEW_MODE);
   return {
     theme: theme === 'light' ? 'light' : 'dark',
     syncView: localStorage.getItem(SETTINGS_KEY_SYNC_VIEW) === 'true',
-    justifyPreview: localStorage.getItem(SETTINGS_KEY_JUSTIFY_PREVIEW) !== 'false'
+    justifyPreview: localStorage.getItem(SETTINGS_KEY_JUSTIFY_PREVIEW) !== 'false',
+    viewMode: ['view', 'both', 'edit'].includes(viewMode) ? viewMode : 'both'
   };
 }
 
@@ -48,6 +51,18 @@ function saveSettings() {
   localStorage.setItem(SETTINGS_KEY_THEME, settings.theme);
   localStorage.setItem(SETTINGS_KEY_SYNC_VIEW, String(settings.syncView));
   localStorage.setItem(SETTINGS_KEY_JUSTIFY_PREVIEW, String(settings.justifyPreview));
+  localStorage.setItem(SETTINGS_KEY_VIEW_MODE, settings.viewMode);
+}
+
+function applyViewMode(mode) {
+  const viewMode = ['view', 'both', 'edit'].includes(mode) ? mode : 'both';
+  const splitView = $('#split-view');
+  if (splitView) splitView.dataset.viewMode = viewMode;
+  document.querySelectorAll('[data-view-mode]').forEach((button) => {
+    const active = button.dataset.viewMode === viewMode;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
 }
 
 function applyTheme(theme) {
@@ -60,6 +75,7 @@ function applyTheme(theme) {
 
 function applySettings() {
   applyTheme(settings.theme);
+  applyViewMode(settings.viewMode);
   const syncToggle = $('#toggle-sync-view');
   if (syncToggle) syncToggle.checked = settings.syncView;
   const justifyToggle = $('#toggle-justify-preview');
@@ -81,6 +97,7 @@ function toggleSettingsPanel(forceOpen) {
 
 function syncScroll(source, target) {
   if (!settings.syncView || syncingScroll) return;
+  if (!source.offsetParent || !target.offsetParent) return;
   const sourceRange = source.scrollHeight - source.clientHeight;
   const targetRange = target.scrollHeight - target.clientHeight;
   const ratio = sourceRange > 0 ? source.scrollTop / sourceRange : 0;
@@ -1469,6 +1486,14 @@ $('#toggle-justify-preview').addEventListener('change', (event) => {
   settings.justifyPreview = event.target.checked;
   saveSettings();
   applySettings();
+});
+
+document.querySelectorAll('[data-view-mode]').forEach((button) => {
+  button.addEventListener('click', () => {
+    settings.viewMode = button.dataset.viewMode || 'both';
+    saveSettings();
+    applyViewMode(settings.viewMode);
+  });
 });
 
 $('#btn-settings').addEventListener('click', () => toggleSettingsPanel());

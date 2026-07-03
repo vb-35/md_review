@@ -22,6 +22,11 @@
         <button id="btn-lock" title="Lock/Unlock" disabled>&#128277; Lock</button>
         <button id="btn-review" title="Version History" disabled>Review</button>
         <button id="btn-threads" title="Comments" disabled>Comments</button>
+        <div class="view-mode-toggle" role="group" aria-label="Editor view mode">
+          <button id="btn-mode-view" type="button" data-view-mode="view" aria-pressed="false">View</button>
+          <button id="btn-mode-both" type="button" data-view-mode="both" aria-pressed="true">Both</button>
+          <button id="btn-mode-edit" type="button" data-view-mode="edit" aria-pressed="false">Edit</button>
+        </div>
         <div class="settings-shell">
           <button id="btn-settings" title="Settings" aria-expanded="false" aria-controls="settings-panel">Settings</button>
           <div id="settings-panel" class="settings-panel hidden" role="dialog" aria-label="Settings">
