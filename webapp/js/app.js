@@ -39,6 +39,10 @@ const state = {
   threads: [],
   selectedBaseId: null,
   selectedHeadId: null,
+  comparedDiff: null,
+  comparedDiffBaselineContent: '',
+  comparedDiffDecisions: {},
+  lastAppliedDiffAction: null,
   editing: false,
   showResolved: false,
   currentView: 'dashboard',
@@ -303,6 +307,12 @@ function resetEditorState() {
   state.editing = false;
   state.versions = [];
   state.threads = [];
+  state.selectedBaseId = null;
+  state.selectedHeadId = null;
+  state.comparedDiff = null;
+  state.comparedDiffBaselineContent = '';
+  state.comparedDiffDecisions = {};
+  state.lastAppliedDiffAction = null;
   closePanels();
 }
 

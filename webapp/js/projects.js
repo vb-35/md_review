@@ -198,19 +198,85 @@
     $('#editor').value = state.currentFile.content || '';
     $('#editor-file-label').textContent = state.currentFile.filePath;
     state.editing = false;
+    state.comparedDiff = null;
+    state.comparedDiffBaselineContent = state.currentFile.content || '';
+    state.comparedDiffDecisions = {};
+    state.lastAppliedDiffAction = null;
+    $('#diff-view').innerHTML = '';
+    $('#diff-meta').textContent = '';
+    $('#version-diff-actions').classList.add('hidden');
     App.preview.updatePreview();
     updateHeader();
     if (switchView) showEditor();
   }
 
+  function decisionKey(rowId, chunkId) {
+    return `${rowId}::${chunkId}`;
+  }
+
+  function currentChunkDecision(rowId, chunkId) {
+    return state.comparedDiffDecisions[decisionKey(rowId, chunkId)] || '';
+  }
+
+  function canApplyDiffChunks() {
+    return canEditCurrentProject() && holdsCurrentLock();
+  }
+
+  function shouldRenderChunkActions(row, chunk) {
+    if (!chunk) return false;
+    if (chunk.kind === 'line-add') return true;
+    if (chunk.kind === 'line-remove') return true;
+    return row.type === 'added';
+  }
+
+  function renderChunkActions(row, chunk) {
+    if (!shouldRenderChunkActions(row, chunk)) return '';
+    const disabled = canApplyDiffChunks() ? '' : ' disabled';
+    const decision = currentChunkDecision(row.rowId, chunk.chunkId);
+    const acceptClass = decision === 'accept' ? ' active' : '';
+    const refuseClass = decision === 'refuse' ? ' active' : '';
+    return `<span class="diff-chunk-actions">
+      <button class="diff-action accept${acceptClass}" data-action="accept" data-row-id="${row.rowId}" data-chunk-id="${chunk.chunkId}"${disabled}>Accept</button>
+      <button class="diff-action refuse${refuseClass}" data-action="refuse" data-row-id="${row.rowId}" data-chunk-id="${chunk.chunkId}"${disabled}>Refuse</button>
+    </span>`;
+  }
+
+  function renderRowText(row) {
+    const chunksById = Object.fromEntries((row.chunks || []).map((chunk) => [chunk.chunkId, chunk]));
+    const segments = row.segments || [{ text: row.line || '', changed: false }];
+    return segments.map((segment) => {
+      if (!segment.changed || !segment.chunkId) return esc(segment.text);
+      const chunk = chunksById[segment.chunkId];
+      const actionMarkup = chunk && chunk.kind === 'replace' && row.type === 'added'
+        ? renderChunkActions(row, chunk)
+        : '';
+      return `<span class="diff-token-changed">${esc(segment.text)}${actionMarkup}</span>`;
+    }).join('');
+  }
+
+  function renderRowLineActions(row) {
+    if (!row.chunks || row.chunks.length !== 1) return '';
+    const chunk = row.chunks[0];
+    if (chunk.kind !== 'line-add' && chunk.kind !== 'line-remove') return '';
+    return renderChunkActions(row, chunk);
+  }
+
   function renderDiff(diff) {
     $('#diff-view').innerHTML = diff.map((row) => {
       const prefix = row.type === 'added' ? '+' : row.type === 'removed' ? '-' : ' ';
-      const text = (row.segments || [{ text: row.text || '', changed: false }]).map((segment) => (
-        segment.changed ? `<span class="diff-token-changed">${esc(segment.text)}</span>` : esc(segment.text)
-      )).join('');
-      return `<div class="diff-line ${row.type}" data-prefix="${prefix}">${text}</div>`;
+      const lineActions = renderRowLineActions(row);
+      const baseLine = row.baseLine ? `B${row.baseLine}` : '';
+      const candLine = row.candLine ? `H${row.candLine}` : '';
+      const lineMeta = [baseLine, candLine].filter(Boolean).join(' ');
+      return `<div class="diff-line ${row.type}" data-prefix="${prefix}">
+        <span class="diff-line-body">${renderRowText(row)}</span>
+        ${lineActions}
+        ${lineMeta ? `<span class="diff-line-meta">${esc(lineMeta)}</span>` : ''}
+      </div>`;
     }).join('');
+    $('#diff-view').querySelectorAll('.diff-action').forEach((button) => {
+      button.addEventListener('click', () => applyDiffDecision(button.dataset.rowId, button.dataset.chunkId, button.dataset.action));
+    });
   }
 
   async function loadVersions() {
@@ -241,9 +307,61 @@
       versionA: state.selectedBaseId,
       versionB: state.selectedHeadId
     });
+    state.comparedDiff = result;
+    state.comparedDiffBaselineContent = $('#editor').value;
+    state.comparedDiffDecisions = {};
+    state.lastAppliedDiffAction = null;
     renderDiff(result.diff);
     $('#diff-meta').textContent = `v${result.versionA} -> v${result.versionB}`;
     $('#version-diff-actions').classList.remove('hidden');
+  }
+
+  async function applyDiffDecision(rowId, chunkId, decision) {
+    if (!state.currentProject || !state.currentFile || !state.comparedDiff) return;
+    if (!canEditCurrentProject()) {
+      alert('Edit access required.');
+      return;
+    }
+    if (!holdsCurrentLock()) {
+      alert('Take the project lock first.');
+      return;
+    }
+
+    const nextDecisions = {
+      ...state.comparedDiffDecisions,
+      [decisionKey(rowId, chunkId)]: decision,
+    };
+    const payloadDecisions = Object.entries(nextDecisions).map(([key, value]) => {
+      const [decisionRowId, decisionChunkId] = key.split('::');
+      return {
+        rowId: decisionRowId,
+        chunkId: decisionChunkId,
+        decision: value,
+      };
+    });
+
+    const result = await App.api('POST', `/projects/${state.currentProject.id}/files/apply-diff-chunk`, {
+      path: state.currentFile.filePath,
+      versionA: state.comparedDiff.versionAId,
+      versionB: state.comparedDiff.versionBId,
+      currentContent: state.comparedDiffBaselineContent,
+      rowId,
+      chunkId,
+      decision,
+      decisions: payloadDecisions,
+    });
+
+    state.comparedDiffDecisions = nextDecisions;
+    state.lastAppliedDiffAction = { rowId, chunkId, decision };
+    state.comparedDiff = {
+      ...state.comparedDiff,
+      diff: result.diff || state.comparedDiff.diff,
+    };
+    $('#editor').value = result.content;
+    state.editing = true;
+    App.preview.updatePreview();
+    updateHeader();
+    renderDiff(state.comparedDiff.diff);
   }
 
   async function revertSelectedVersion() {

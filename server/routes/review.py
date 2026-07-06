@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, jsonify, request, session
 
 from models import get_db, get_project_for_user, user_can_edit_project
-from utils.diff import compute_diff
+from utils.diff import apply_diff_decisions, compute_diff
 from utils.repo_storage import (
     get_project_head_commit,
     git_commit_paths,
@@ -47,6 +47,17 @@ def require_project_edit(project_id, user_id):
     if not user_can_edit_project(project_id, user_id):
         return jsonify({'error': 'Forbidden'}), 403
     return None
+
+
+def require_project_lock(project_id, user_id):
+    project = get_project_for_user(project_id, user_id)
+    if not project:
+        return None, (jsonify({'error': 'Not found'}), 404)
+    if project['access_role'] not in ('owner', 'editor'):
+        return None, (jsonify({'error': 'Forbidden'}), 403)
+    if project.get('lock_owner_id') != user_id:
+        return None, (jsonify({'error': 'Take the project lock first.'}), 423)
+    return project, None
 
 
 def normalize_comment_context(data):
@@ -149,10 +160,106 @@ def compare_versions(project_id):
     diff_rows = compute_diff(va['content'], vb['content'])
     return jsonify({
         'diff': diff_rows,
+        'projectId': project_id,
+        'filePath': file_path,
         'versionA': va['version'],
+        'versionAId': va['id'],
         'versionB': vb['version'],
+        'versionBId': vb['id'],
         'createdAtA': va['created_at'],
         'createdAtB': vb['created_at'],
+    })
+
+
+@review_bp.route('/projects/<project_id>/files/apply-diff-chunk', methods=['POST'])
+@require_auth
+def apply_diff_chunk_route(project_id):
+    uid = session['user_id']
+    project, access_error = require_project_lock(project_id, uid)
+    if access_error:
+        return access_error
+
+    data = request.get_json() or {}
+    version_a = data.get('versionA')
+    version_b = data.get('versionB')
+    current_content = data.get('currentContent')
+    row_id = data.get('rowId')
+    chunk_id = data.get('chunkId')
+    decision = data.get('decision')
+    decisions = data.get('decisions')
+
+    try:
+        file_path = normalize_project_file_path(data.get('path', ''))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    if not version_a or not version_b:
+        return jsonify({'error': 'versionA and versionB required'}), 400
+    if current_content is None:
+        return jsonify({'error': 'currentContent required'}), 400
+    if not row_id or not chunk_id or decision not in {'accept', 'refuse'}:
+        return jsonify({'error': 'rowId, chunkId, and decision required'}), 400
+
+    conn = get_db()
+    va = conn.execute(
+        "SELECT * FROM file_versions WHERE id = ? AND project_id = ? AND file_path = ?",
+        (version_a, project_id, file_path)
+    ).fetchone()
+    vb = conn.execute(
+        "SELECT * FROM file_versions WHERE id = ? AND project_id = ? AND file_path = ?",
+        (version_b, project_id, file_path)
+    ).fetchone()
+    if not va or not vb:
+        return jsonify({'error': 'Version not found'}), 404
+
+    decision_list = []
+    if isinstance(decisions, list):
+        for item in decisions:
+            if not isinstance(item, dict):
+                continue
+            if item.get('rowId') and item.get('chunkId') and item.get('decision') in {'accept', 'refuse'}:
+                decision_list.append({
+                    'rowId': item['rowId'],
+                    'chunkId': item['chunkId'],
+                    'decision': item['decision'],
+                })
+
+    if not any(item['rowId'] == row_id and item['chunkId'] == chunk_id for item in decision_list):
+        decision_list.append({
+            'rowId': row_id,
+            'chunkId': chunk_id,
+            'decision': decision,
+        })
+
+    try:
+        applied = apply_diff_decisions(va['content'], vb['content'], current_content, decision_list)
+    except KeyError as exc:
+        return jsonify({'error': str(exc)}), 404
+    except RuntimeError as exc:
+        return jsonify({
+            'error': str(exc),
+            'conflict': True,
+            'rowId': row_id,
+            'chunkId': chunk_id,
+            'decision': decision,
+        }), 409
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    return jsonify({
+        'projectId': project_id,
+        'filePath': file_path,
+        'content': applied['content'],
+        'applied': True,
+        'decision': decision,
+        'rowId': row_id,
+        'chunkId': chunk_id,
+        'diff': applied['diff'],
+        'versionA': va['version'],
+        'versionAId': va['id'],
+        'versionB': vb['version'],
+        'versionBId': vb['id'],
+        'lockOwnerId': project.get('lock_owner_id'),
     })
 
 

@@ -103,7 +103,48 @@ try:
     assert response.status_code == 200
     diff = response.get_json()['diff']
     assert any(row['type'] in ('added', 'removed') for row in diff)
+    compare_payload = response.get_json()
     print("PASS: compare_versions")
+
+    changed_row = next(row for row in diff if row['type'] in ('added', 'removed') and row.get('chunks'))
+    changed_chunk = changed_row['chunks'][0]
+
+    response = viewer_client.post(f'/api/projects/{project_id}/files/apply-diff-chunk', json={
+        'path': 'docs/spec.md',
+        'versionA': versions[1]['id'],
+        'versionB': versions[0]['id'],
+        'currentContent': '# Updated\n',
+        'rowId': changed_row['rowId'],
+        'chunkId': changed_chunk['chunkId'],
+        'decision': 'refuse',
+    })
+    assert response.status_code == 403
+    print("PASS: viewer_cannot_apply_diff_chunk")
+
+    response = editor_client.post(f'/api/projects/{project_id}/files/apply-diff-chunk', json={
+        'path': 'docs/spec.md',
+        'versionA': compare_payload['versionAId'],
+        'versionB': compare_payload['versionBId'],
+        'currentContent': '# Updated\n',
+        'rowId': changed_row['rowId'],
+        'chunkId': changed_chunk['chunkId'],
+        'decision': 'refuse',
+        'decisions': [{
+            'rowId': changed_row['rowId'],
+            'chunkId': changed_chunk['chunkId'],
+            'decision': 'refuse',
+        }],
+    })
+    assert response.status_code == 200, response.data
+    applied_content = response.get_json()['content']
+    assert applied_content == '# Start\n'
+
+    response = editor_client.put(f'/api/projects/{project_id}/files/content', json={
+        'path': 'docs/spec.md',
+        'content': applied_content,
+    })
+    assert response.status_code == 200, response.data
+    print("PASS: apply_diff_chunk_and_save")
 
     context = {
         'projectId': project_id,
@@ -146,7 +187,7 @@ try:
     assert response.status_code == 200
     response = editor_client.get(f'/api/projects/{project_id}/files/content?path=docs/final.md')
     assert response.status_code == 200
-    assert response.get_json()['content'] == '# Updated\n'
+    assert response.get_json()['content'] == '# Start\n'
     print("PASS: rename_markdown_file")
 
     response = editor_client.delete(f'/api/projects/{project_id}/files', json={'path': 'assets/logo.svg'})
