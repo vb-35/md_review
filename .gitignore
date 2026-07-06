@@ -2,12 +2,21 @@
 venv/
 __pycache__/
 *.pyc
+.pytest_cache/
+.mypy_cache/
 .md-review/
 
 data/
 flask_session/
 md_review.db
+*.db-journal
+*.sqlite3
 server_error.log
 cookies.txt
+.env
+.env.*
+deploy/*.env
+!deploy/*.env.example
+*.log
 
 .DS_Store

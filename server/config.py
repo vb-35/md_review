@@ -1,8 +1,9 @@
 import os
+import secrets
 
 class Config:
     APP_BASE_PATH = os.environ.get('APP_BASE_PATH', '').strip()
-    SECRET_KEY = os.environ.get('SECRET_KEY', 'local-dev-key')
+    SECRET_KEY = os.environ.get('SECRET_KEY') or secrets.token_urlsafe(48)
     SESSION_TYPE = 'filesystem'
     SESSION_FILE_DIR = os.environ.get('SESSION_FILE_DIR', os.path.abspath('flask_session'))
     SESSION_COOKIE_HTTPONLY = True
