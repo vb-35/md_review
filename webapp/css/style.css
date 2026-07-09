@@ -27,7 +27,7 @@
   --surface-soft-hover: rgba(42, 59, 74, 0.72);
   --surface-border-strong: #46607a;
   --editor-header-bg: rgba(24, 33, 43, 0.9);
-  --editor-bg: rgba(11, 15, 19, 0.95);
+  --editor-bg: rgba(16, 20, 25, 0.7);
   --preview-bg: rgba(16, 20, 25, 0.7);
   --code-block-bg: #0d1117;
   --inline-code-bg: rgba(255, 255, 255, 0.06);
@@ -67,7 +67,7 @@ body[data-theme="light"] {
   --surface-soft-hover: rgba(232, 220, 196, 0.95);
   --surface-border-strong: #c8b895;
   --editor-header-bg: rgba(243, 234, 216, 0.9);
-  --editor-bg: rgba(255, 250, 240, 0.98);
+  --editor-bg: rgba(252, 247, 238, 0.96);
   --preview-bg: rgba(252, 247, 238, 0.96);
   --code-block-bg: #f6ede0;
   --inline-code-bg: rgba(42, 36, 27, 0.08);

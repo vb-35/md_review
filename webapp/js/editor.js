@@ -106,19 +106,27 @@ const darkTheme = [
     },
     ".cm-scroller": {
       overflow: "auto",
+      backgroundColor: "var(--editor-bg)",
       fontFamily: '"IBM Plex Mono", "Fira Code", monospace',
       fontSize: "var(--workspace-font-size)",
       lineHeight: "1.6"
     },
     ".cm-content, .cm-gutters": {
-      minHeight: "100%"
+      minHeight: "100%",
+      backgroundColor: "var(--editor-bg)"
     },
     ".cm-content": {
       padding: "18px",
       tabSize: "4"
     },
+    ".cm-gutters": {
+      borderRight: "1px solid rgba(255, 255, 255, 0.04)"
+    },
     ".cm-line": {
       padding: "0"
+    },
+    ".cm-activeLine, .cm-activeLineGutter": {
+      backgroundColor: "rgba(255, 255, 255, 0.02)"
     },
     ".cm-searchMatch": {
       backgroundColor: "rgba(242, 184, 75, 0.26)",
