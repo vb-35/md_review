@@ -232,16 +232,7 @@
   }
 
   function revealEditorOffset(offset) {
-    const editor = $('#editor');
-    const lineHeight = parseFloat(root.getComputedStyle(editor).lineHeight) || 22;
-    const lineIndex = editor.value.slice(0, offset).split('\n').length - 1;
-    const top = lineIndex * lineHeight;
-    const bottom = top + lineHeight;
-    if (top < editor.scrollTop) {
-      editor.scrollTop = top;
-    } else if (bottom > editor.scrollTop + editor.clientHeight) {
-      editor.scrollTop = bottom - editor.clientHeight;
-    }
+    App.editor.revealOffset(offset);
   }
 
   function moveEditorCursorToPreviewClick(event) {
@@ -253,7 +244,7 @@
     if (!lineEl) return;
     const lineNumber = parseInt(lineEl.getAttribute('data-line'), 10);
     if (!lineNumber) return;
-    const source = $('#editor').value || '';
+    const source = App.editor.getValue();
     const lineStart = getLineStartOffset(source, lineNumber);
     const mathBlock = event.target.closest('.math-block');
     const mathInline = event.target.closest('.math-inline');
@@ -297,9 +288,8 @@
         }
       }
     }
-    const editor = $('#editor');
-    editor.focus();
-    editor.setSelectionRange(targetOffset, targetOffset);
+    App.editor.focus();
+    App.editor.setCursor(targetOffset);
     revealEditorOffset(targetOffset);
   }
 
@@ -331,17 +321,30 @@
   }
 
   function getSourceOffsetsFromPreviewSelection(startLine, endLine, selectedText) {
-    return getSourceOffsetsForSlice($('#editor').value || '', startLine, endLine, selectedText);
+    return getSourceOffsetsForSlice(App.editor.getValue(), startLine, endLine, selectedText);
   }
 
-  function syncScroll(source, target) {
+  function syncEditorToPreview() {
     if (!state.settings.syncView || state.syncingScroll) return;
-    if (!source.offsetParent || !target.offsetParent) return;
-    const sourceRange = source.scrollHeight - source.clientHeight;
-    const targetRange = target.scrollHeight - target.clientHeight;
-    const ratio = sourceRange > 0 ? source.scrollTop / sourceRange : 0;
+    const preview = $('#preview');
+    if (!preview || !preview.offsetParent) return;
+    const source = App.editor.getScrollInfo();
+    const targetRange = preview.scrollHeight - preview.clientHeight;
     state.syncingScroll = true;
-    target.scrollTop = targetRange > 0 ? ratio * targetRange : 0;
+    preview.scrollTop = targetRange > 0 ? source.ratio * targetRange : 0;
+    root.requestAnimationFrame(() => {
+      state.syncingScroll = false;
+    });
+  }
+
+  function syncPreviewToEditor() {
+    if (!state.settings.syncView || state.syncingScroll) return;
+    const preview = $('#preview');
+    if (!preview || !preview.offsetParent) return;
+    const previewRange = preview.scrollHeight - preview.clientHeight;
+    const ratio = previewRange > 0 ? preview.scrollTop / previewRange : 0;
+    state.syncingScroll = true;
+    App.editor.scrollToRatio(ratio);
     root.requestAnimationFrame(() => {
       state.syncingScroll = false;
     });
@@ -352,7 +355,7 @@
       $('#preview').innerHTML = '';
       return;
     }
-    const source = $('#editor').value || '';
+    const source = App.editor.getValue();
     const parsed = root.ScientificPreview
       ? root.ScientificPreview.parseDocument(source)
       : { metadata: {}, body: source, bodyLineOffset: 0 };
@@ -396,7 +399,8 @@
     moveEditorCursorToPreviewClick,
     revealEditorOffset,
     schedulePreview,
-    syncScroll,
+    syncEditorToPreview,
+    syncPreviewToEditor,
     updatePreview
   };
 

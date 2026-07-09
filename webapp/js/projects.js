@@ -184,7 +184,9 @@
     updateHeader();
     if (nextCurrentFilePath === '') {
       state.currentFile = null;
-      $('#editor').value = '';
+      state.suspendEditorChangeTracking = true;
+      App.editor.setValue('');
+      state.suspendEditorChangeTracking = false;
       $('#editor-file-label').textContent = 'Source';
       $('#preview').innerHTML = '';
       state.editing = false;
@@ -202,7 +204,9 @@
     state.currentProject = await App.api('GET', `/projects/${state.currentProject.id}`);
     state.currentFile = await App.api('GET', `/projects/${state.currentProject.id}/files/content?path=${encodeURIComponent(filePath)}`);
     if (App.findReplace && App.findReplace.closeToolbar) App.findReplace.closeToolbar();
-    $('#editor').value = state.currentFile.content || '';
+    state.suspendEditorChangeTracking = true;
+    App.editor.setValue(state.currentFile.content || '');
+    state.suspendEditorChangeTracking = false;
     $('#editor-file-label').textContent = state.currentFile.filePath;
     state.editing = false;
     state.comparedDiff = null;
@@ -318,7 +322,7 @@
       versionB: state.selectedHeadId
     });
     state.comparedDiff = result;
-    state.comparedDiffBaselineContent = $('#editor').value;
+    state.comparedDiffBaselineContent = App.editor.getValue();
     state.comparedDiffDecisions = {};
     state.lastAppliedDiffAction = null;
     renderDiff(result.diff);
@@ -367,7 +371,7 @@
       ...state.comparedDiff,
       diff: result.diff || state.comparedDiff.diff,
     };
-    $('#editor').value = result.content;
+    App.editor.setValue(result.content);
     state.editing = true;
     App.preview.updatePreview();
     updateHeader();
@@ -379,7 +383,9 @@
     if (!window.confirm('Revert file to the selected version? This creates a new version.')) return;
     const result = await App.api('POST', `/projects/${state.currentProject.id}/files/versions/${state.selectedBaseId}/revert`);
     await refreshProjectState(state.currentFile.filePath);
-    $('#editor').value = result.content || '';
+    state.suspendEditorChangeTracking = true;
+    App.editor.setValue(result.content || '');
+    state.suspendEditorChangeTracking = false;
     state.editing = false;
     App.preview.updatePreview();
     await loadVersions();

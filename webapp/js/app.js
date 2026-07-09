@@ -19,6 +19,243 @@ const HIGHLIGHT_THEME_LIGHT = 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/
 const SIDE_PANEL_DEFAULT_WIDTH = 420;
 const SIDE_PANEL_MIN_WIDTH = 280;
 const SIDE_PANEL_MIN_MAIN_WIDTH = 320;
+let resolveEditorReady;
+const editorReady = new Promise((resolve) => {
+  resolveEditorReady = resolve;
+});
+
+function createFallbackEditorAdapter() {
+  let textarea = null;
+  const changeCallbacks = new Set();
+  const scrollCallbacks = new Set();
+  let searchQuery = '';
+  let searchReplacement = '';
+
+  function ensureTextarea(container) {
+    if (textarea) return textarea;
+    textarea = document.createElement('textarea');
+    textarea.id = 'editor-fallback';
+    textarea.spellcheck = false;
+    textarea.style.flex = '1';
+    textarea.style.width = '100%';
+    textarea.style.height = '100%';
+    textarea.style.resize = 'none';
+    textarea.style.border = 'none';
+    textarea.style.outline = 'none';
+    textarea.style.padding = '18px';
+    textarea.style.margin = '0';
+    textarea.style.fontFamily = '"IBM Plex Mono", "Fira Code", monospace';
+    textarea.style.fontSize = 'var(--workspace-font-size)';
+    textarea.style.lineHeight = '1.6';
+    textarea.style.color = 'var(--fg)';
+    textarea.style.background = 'transparent';
+    textarea.style.boxSizing = 'border-box';
+    textarea.addEventListener('input', () => {
+      const payload = {
+        docChanged: true,
+        selectionSet: false,
+        focusChanged: false,
+        viewportChanged: false,
+        value: textarea.value,
+        selection: fallbackEditor.getSelection()
+      };
+      changeCallbacks.forEach((callback) => callback(payload));
+    });
+    textarea.addEventListener('keyup', () => {
+      const payload = {
+        docChanged: false,
+        selectionSet: true,
+        focusChanged: false,
+        viewportChanged: false,
+        value: textarea.value,
+        selection: fallbackEditor.getSelection()
+      };
+      changeCallbacks.forEach((callback) => callback(payload));
+    });
+    textarea.addEventListener('click', () => {
+      const payload = {
+        docChanged: false,
+        selectionSet: true,
+        focusChanged: false,
+        viewportChanged: false,
+        value: textarea.value,
+        selection: fallbackEditor.getSelection()
+      };
+      changeCallbacks.forEach((callback) => callback(payload));
+    });
+    textarea.addEventListener('scroll', () => {
+      scrollCallbacks.forEach((callback) => callback(fallbackEditor.getScrollInfo()));
+    });
+    container.appendChild(textarea);
+    return textarea;
+  }
+
+  function getMatches() {
+    if (!searchQuery) return [];
+    const text = textarea ? textarea.value : '';
+    const matches = [];
+    let cursor = 0;
+    while (cursor <= text.length - searchQuery.length) {
+      const index = text.indexOf(searchQuery, cursor);
+      if (index === -1) break;
+      matches.push({ from: index, to: index + searchQuery.length });
+      cursor = index + searchQuery.length;
+    }
+    return matches;
+  }
+
+  const fallbackEditor = {
+    init(container, initialValue = '') {
+      const input = ensureTextarea(container);
+      input.value = initialValue || '';
+      return input;
+    },
+    getValue() {
+      return textarea ? textarea.value : '';
+    },
+    setValue(value) {
+      if (!textarea) return;
+      textarea.value = value == null ? '' : String(value);
+    },
+    setEditable(isEditable) {
+      if (!textarea) return;
+      textarea.readOnly = !isEditable;
+      textarea.style.color = isEditable ? 'var(--fg)' : 'var(--fg-dim)';
+    },
+    focus() {
+      if (textarea) textarea.focus();
+    },
+    getSelection() {
+      const input = textarea;
+      const from = input ? input.selectionStart : 0;
+      const to = input ? input.selectionEnd : 0;
+      return {
+        anchor: from,
+        head: to,
+        from,
+        to,
+        text: input ? input.value.slice(from, to) : ''
+      };
+    },
+    setSelection(anchor, head = anchor) {
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(anchor, head);
+    },
+    replaceSelection(text) {
+      if (!textarea) return;
+      textarea.setRangeText(String(text ?? ''), textarea.selectionStart, textarea.selectionEnd, 'end');
+    },
+    replaceRange(from, to, text) {
+      if (!textarea) return;
+      textarea.setRangeText(String(text ?? ''), from, to, 'end');
+    },
+    setCursor(offset) {
+      if (!textarea) return;
+      textarea.focus();
+      textarea.setSelectionRange(offset, offset);
+    },
+    revealOffset(offset) {
+      if (!textarea) return;
+      const before = textarea.value.slice(0, offset);
+      const lineHeight = parseFloat(getComputedStyle(textarea).lineHeight) || 22;
+      const line = before.split('\n').length - 1;
+      textarea.scrollTop = Math.max(0, line * lineHeight - textarea.clientHeight / 2);
+    },
+    getScrollInfo() {
+      if (!textarea) return { top: 0, scrollHeight: 0, clientHeight: 0, ratio: 0 };
+      const range = Math.max(0, textarea.scrollHeight - textarea.clientHeight);
+      return {
+        top: textarea.scrollTop,
+        scrollHeight: textarea.scrollHeight,
+        clientHeight: textarea.clientHeight,
+        ratio: range > 0 ? textarea.scrollTop / range : 0
+      };
+    },
+    scrollToRatio(ratio) {
+      if (!textarea) return;
+      const range = Math.max(0, textarea.scrollHeight - textarea.clientHeight);
+      textarea.scrollTop = Math.max(0, Math.min(1, ratio || 0)) * range;
+    },
+    onChange(callback) {
+      changeCallbacks.add(callback);
+      return () => changeCallbacks.delete(callback);
+    },
+    onScroll(callback) {
+      scrollCallbacks.add(callback);
+      return () => scrollCallbacks.delete(callback);
+    },
+    applyTheme() {},
+    openSearchPanel() {},
+    closeSearchPanel() {},
+    setSearchQuery(query, replacement = '') {
+      searchQuery = query || '';
+      searchReplacement = replacement || '';
+    },
+    getSearchStatus() {
+      const matches = getMatches();
+      const selection = fallbackEditor.getSelection();
+      let activeIndex = matches.findIndex((match) => match.from === selection.from && match.to === selection.to);
+      if (activeIndex === -1 && matches.length) {
+        activeIndex = matches.findIndex((match) => match.from >= selection.from);
+        if (activeIndex === -1) activeIndex = 0;
+      }
+      return {
+        query: searchQuery,
+        replacement: searchReplacement,
+        count: matches.length,
+        activeIndex,
+        matches
+      };
+    },
+    findNext() {
+      const status = fallbackEditor.getSearchStatus();
+      if (!status.count) return false;
+      const nextIndex = status.activeIndex < 0 ? 0 : (status.activeIndex + 1) % status.count;
+      fallbackEditor.setSelection(status.matches[nextIndex].from, status.matches[nextIndex].to);
+      return true;
+    },
+    findPrevious() {
+      const status = fallbackEditor.getSearchStatus();
+      if (!status.count) return false;
+      const prevIndex = status.activeIndex < 0 ? status.count - 1 : (status.activeIndex - 1 + status.count) % status.count;
+      fallbackEditor.setSelection(status.matches[prevIndex].from, status.matches[prevIndex].to);
+      return true;
+    },
+    replaceNext() {
+      if (!textarea || textarea.readOnly) return false;
+      const status = fallbackEditor.getSearchStatus();
+      if (!status.count || status.activeIndex < 0) return false;
+      const match = status.matches[status.activeIndex];
+      fallbackEditor.replaceRange(match.from, match.to, searchReplacement);
+      fallbackEditor.setSelection(match.from, match.from + searchReplacement.length);
+      return true;
+    },
+    replaceAll() {
+      if (!textarea || textarea.readOnly || !searchQuery) return false;
+      const matches = getMatches();
+      if (!matches.length) return false;
+      textarea.value = textarea.value.split(searchQuery).join(searchReplacement);
+      return true;
+    }
+  };
+
+  return fallbackEditor;
+}
+
+function ensureEditorReady() {
+  const container = $('#editor-root');
+  try {
+    window.App.editor.init(container, '');
+  } catch (error) {
+    console.error('Editor initialization failed, falling back to plain textarea editor.', error);
+    if (!window.App._usingFallbackEditor) {
+      window.App.editor = createFallbackEditorAdapter();
+      window.App._usingFallbackEditor = true;
+    }
+    window.App.editor.init(container, '');
+  }
+}
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -66,6 +303,7 @@ const state = {
   activeSidePanel: 'none',
   sidePanelResize: null,
   syncingScroll: false,
+  suspendEditorChangeTracking: false,
   initialized: false
 };
 
@@ -139,6 +377,9 @@ function applyTheme(theme) {
   const highlightTheme = $('#highlight-theme');
   if (highlightTheme) {
     highlightTheme.href = theme === 'light' ? HIGHLIGHT_THEME_LIGHT : HIGHLIGHT_THEME_DARK;
+  }
+  if (window.App && window.App.editor && window.App.editor.applyTheme) {
+    window.App.editor.applyTheme(theme);
   }
 }
 
@@ -243,10 +484,8 @@ function capitalize(value) {
 }
 
 function insertAtCursor(text) {
-  const editor = $('#editor');
-  editor.setRangeText(text, editor.selectionStart, editor.selectionEnd, 'end');
-  editor.focus();
-  markEditorChanged();
+  window.App.editor.replaceSelection(text);
+  window.App.editor.focus();
 }
 
 function markEditorChanged() {
@@ -392,7 +631,9 @@ function updateEditorPermissions() {
   $('#btn-save').disabled = !saveEnabled;
   $('#btn-lock').disabled = lockDisabled;
   $('#btn-upload-image').disabled = !state.currentFile || !canEdit || !holdsCurrentLock();
-  $('#editor').readOnly = !state.currentFile || !canEdit || !holdsCurrentLock();
+  if (window.App.editor && window.App.editor.setEditable) {
+    window.App.editor.setEditable(!!state.currentFile && canEdit && holdsCurrentLock());
+  }
   if (!state.currentProject || !canEdit) {
     $('#btn-lock').textContent = 'Lock';
   } else if (holdsCurrentLock()) {
@@ -403,13 +644,15 @@ function updateEditorPermissions() {
     $('#btn-lock').textContent = 'Lock';
   }
   if (window.App.findReplace && window.App.findReplace.refreshMatches) {
-    window.App.findReplace.refreshMatches($('#editor').selectionStart, 'forward');
+    window.App.findReplace.refreshMatches();
   }
 }
 
 function resetEditorState() {
   state.currentFile = null;
-  $('#editor').value = '';
+  state.suspendEditorChangeTracking = true;
+  window.App.editor.setValue('');
+  state.suspendEditorChangeTracking = false;
   $('#editor-file-label').textContent = 'Source';
   $('#preview').innerHTML = '';
   if (window.App.findReplace && window.App.findReplace.closeToolbar) {
@@ -478,6 +721,13 @@ window.App = {
   comments: {},
   projects: {}
 };
+
+window.App.editorReady = editorReady;
+window.App._resolveEditorReady = resolveEditorReady;
+if (!window.App.editor) {
+  window.App.editor = createFallbackEditorAdapter();
+  window.App._usingFallbackEditor = true;
+}
 
 function wireEvents() {
   $('#login-form').addEventListener('submit', async (event) => {
@@ -563,31 +813,13 @@ function wireEvents() {
     await window.App.projects.refreshProjectState();
   });
 
-  $('#editor').addEventListener('input', () => {
-    markEditorChanged();
-  });
-
-  $('#editor').addEventListener('keydown', (event) => {
-    if ((event.ctrlKey || event.metaKey) && event.key === 's') {
-      event.preventDefault();
-      $('#btn-save').click();
-    }
-    if (event.key === 'Tab' && !$('#editor').readOnly) {
-      event.preventDefault();
-      const editor = $('#editor');
-      editor.setRangeText('    ', editor.selectionStart, editor.selectionEnd, 'end');
-      markEditorChanged();
-    }
-  });
-
-  $('#editor').addEventListener('scroll', () => window.App.preview.syncScroll($('#editor'), $('#preview')));
-  $('#preview').addEventListener('scroll', () => window.App.preview.syncScroll($('#preview'), $('#editor')));
+  $('#preview').addEventListener('scroll', () => window.App.preview.syncPreviewToEditor());
 
   $('#btn-save').addEventListener('click', async () => {
     if (!state.currentProject || !state.currentFile) return;
     state.currentFile = await api('PUT', `/projects/${state.currentProject.id}/files/content`, {
       path: state.currentFile.filePath,
-      content: $('#editor').value
+      content: window.App.editor.getValue()
     });
     state.editing = false;
     await window.App.projects.refreshProjectState(state.currentFile.filePath);
@@ -754,6 +986,18 @@ async function bootstrap() {
       gfm: true,
       headerIds: false,
       mangle: false
+    });
+    ensureEditorReady();
+    window.App.editor.onChange((update) => {
+      if (window.App.findReplace && window.App.findReplace.handleEditorUpdate) {
+        window.App.findReplace.handleEditorUpdate(update);
+      }
+      if (update.docChanged && !state.suspendEditorChangeTracking) {
+        markEditorChanged();
+      }
+    });
+    window.App.editor.onScroll(() => {
+      window.App.preview.syncEditorToPreview();
     });
     wireEvents();
     applyTheme(state.settings.theme);

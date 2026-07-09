@@ -599,6 +599,11 @@ body.is-resizing-side-panel #side-panel-resizer::before {
   background: var(--editor-bg);
 }
 
+#editor-root {
+  flex: 1;
+  min-height: 0;
+}
+
 .pane-header {
   display: flex;
   align-items: center;
@@ -663,57 +668,6 @@ body.is-resizing-side-panel #side-panel-resizer::before {
 
 .find-replace-close:hover {
   background: var(--surface-soft-hover);
-}
-
-#editor {
-  flex: 1;
-  resize: none;
-  border: none;
-  border-radius: 0;
-  outline: none;
-  padding: 18px;
-  font-family: "IBM Plex Mono", "Fira Code", monospace;
-  font-size: var(--workspace-font-size);
-  line-height: 1.6;
-  tab-size: 4;
-  background: transparent;
-  position: relative;
-  z-index: 2;
-}
-
-#editor-find-highlight {
-  position: absolute;
-  inset: 0;
-  z-index: 1;
-  pointer-events: none;
-  white-space: pre-wrap;
-  overflow: hidden;
-  padding: 18px;
-  font-family: "IBM Plex Mono", "Fira Code", monospace;
-  font-size: var(--workspace-font-size);
-  line-height: 1.6;
-  tab-size: 4;
-  color: transparent;
-}
-
-#editor-find-highlight mark {
-  background: rgba(242, 184, 75, 0.32);
-  box-shadow: 0 0 0 1px rgba(242, 184, 75, 0.45);
-  color: transparent;
-  border-radius: 3px;
-}
-
-#editor-find-highlight mark.current {
-  background: rgba(180, 107, 24, 0.42);
-  box-shadow: 0 0 0 1px rgba(180, 107, 24, 0.7);
-}
-
-#editor-find-highlight.hidden {
-  display: none !important;
-}
-
-#editor[readonly] {
-  color: var(--fg-dim);
 }
 
 #preview {

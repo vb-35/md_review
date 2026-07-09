@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MD Review</title>
-  <link rel="stylesheet" href="css/style.css">
+  <link rel="stylesheet" href="css/style.css?v=20260709c">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link id="highlight-theme" rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css">
 </head>
@@ -189,8 +189,7 @@
             <button id="btn-find-close" class="find-replace-close" type="button" aria-label="Close find and replace">&times;</button>
           </div>
           <div id="editor-shell">
-            <div id="editor-find-highlight" aria-hidden="true"></div>
-            <textarea id="editor" spellcheck="false"></textarea>
+            <div id="editor-root" aria-label="Markdown editor"></div>
           </div>
         </div>
         <div id="preview-pane">
@@ -264,12 +263,24 @@
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/javascript.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/python.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/bash.min.js"></script>
-  <script src="js/scientific-preview.js"></script>
-  <script src="js/app.js"></script>
-  <script src="js/find-replace.js"></script>
-  <script src="js/preview.js"></script>
-  <script src="js/comments.js"></script>
-  <script src="js/projects.js"></script>
-  <script>window.App.bootstrap();</script>
+  <script src="js/scientific-preview.js?v=20260709c"></script>
+  <script src="js/app.js?v=20260709c"></script>
+  <script src="js/find-replace.js?v=20260709c"></script>
+  <script src="js/preview.js?v=20260709c"></script>
+  <script src="js/comments.js?v=20260709c"></script>
+  <script src="js/projects.js?v=20260709c"></script>
+  <script type="module" src="js/editor.js?v=20260709c"></script>
+  <script>
+    Promise.race([
+      window.App.editorReady,
+      new Promise((resolve) => setTimeout(resolve, 1500))
+    ])
+      .catch((error) => {
+        console.error('Editor module failed to initialize', error);
+      })
+      .finally(() => {
+        window.App.bootstrap();
+      });
+  </script>
 </body>
 </html>

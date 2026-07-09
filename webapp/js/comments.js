@@ -85,7 +85,7 @@
   function getAnchorSelectedText(anchor) {
     if (anchor && anchor.selectedText && anchor.selectedText.trim()) return anchor.selectedText.trim();
     if (!anchor || typeof anchor.startOffset !== 'number' || typeof anchor.endOffset !== 'number') return '';
-    return ($('#editor').value || '').slice(anchor.startOffset, anchor.endOffset).trim();
+    return App.editor.getValue().slice(anchor.startOffset, anchor.endOffset).trim();
   }
 
   function getAnchorLabel(anchor) {
