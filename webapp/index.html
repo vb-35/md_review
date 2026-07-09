@@ -223,6 +223,14 @@
               <h3>Comments</h3>
               <div class="comments-panel-actions">
                 <label>
+                  Sort
+                  <select id="comment-sort">
+                    <option value="activity-desc">Newest activity</option>
+                    <option value="activity-asc">Oldest activity</option>
+                    <option value="line-asc">Line number</option>
+                  </select>
+                </label>
+                <label>
                   <input type="checkbox" id="show-resolved"> Show resolved
                 </label>
                 <button id="btn-close-comments" class="panel-close">&times;</button>

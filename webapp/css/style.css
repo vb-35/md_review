@@ -1221,6 +1221,8 @@ body.preview-justify-disabled .markdown-body ol {
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .comments-panel-actions label {
@@ -1229,6 +1231,11 @@ body.preview-justify-disabled .markdown-body ol {
   gap: 4px;
   font-size: 12px;
   color: var(--fg-dim);
+}
+
+.comments-panel-actions select {
+  min-width: 128px;
+  max-width: 100%;
 }
 
 ::-webkit-scrollbar {

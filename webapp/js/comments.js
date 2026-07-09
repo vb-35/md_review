@@ -1,4 +1,73 @@
 (function (root) {
+  function getTimestamp(value) {
+    const timestamp = Date.parse(value || '');
+    return Number.isNaN(timestamp) ? 0 : timestamp;
+  }
+
+  function getThreadLatestActivityTimestamp(thread) {
+    const timestamps = [getTimestamp(thread && thread.createdAt)];
+    for (const comment of (thread && thread.comments) || []) {
+      timestamps.push(getTimestamp(comment.createdAt));
+    }
+    return Math.max(...timestamps);
+  }
+
+  function getThreadStartLine(thread) {
+    const startLine = thread && thread.anchor ? Number(thread.anchor.startLine) : Number.NaN;
+    return Number.isFinite(startLine) ? startLine : Number.POSITIVE_INFINITY;
+  }
+
+  function isGlobalThread(thread) {
+    return !thread || !thread.anchor || !Number.isFinite(Number(thread.anchor.startLine));
+  }
+
+  function compareValues(left, right) {
+    if (left < right) return -1;
+    if (left > right) return 1;
+    return 0;
+  }
+
+  function compareThreadsByActivityDesc(left, right) {
+    return compareValues(getThreadLatestActivityTimestamp(right), getThreadLatestActivityTimestamp(left))
+      || compareValues(getThreadStartLine(left), getThreadStartLine(right))
+      || compareValues(getTimestamp(left && left.createdAt), getTimestamp(right && right.createdAt))
+      || compareValues((left && left.id) || '', (right && right.id) || '');
+  }
+
+  function compareThreadsByActivityAsc(left, right) {
+    return compareValues(getThreadLatestActivityTimestamp(left), getThreadLatestActivityTimestamp(right))
+      || compareValues(getThreadStartLine(left), getThreadStartLine(right))
+      || compareValues(getTimestamp(left && left.createdAt), getTimestamp(right && right.createdAt))
+      || compareValues((left && left.id) || '', (right && right.id) || '');
+  }
+
+  function compareThreadsByLineAsc(left, right) {
+    return compareValues(isGlobalThread(left) ? 0 : 1, isGlobalThread(right) ? 0 : 1)
+      || compareValues(getThreadStartLine(left), getThreadStartLine(right))
+      || compareThreadsByActivityDesc(left, right)
+      || compareValues((left && left.id) || '', (right && right.id) || '');
+  }
+
+  function sortThreads(threads, sortMode = 'activity-desc') {
+    const list = Array.isArray(threads) ? [...threads] : [];
+    const comparator = sortMode === 'activity-asc'
+      ? compareThreadsByActivityAsc
+      : sortMode === 'line-asc'
+        ? compareThreadsByLineAsc
+        : compareThreadsByActivityDesc;
+    return list.sort(comparator);
+  }
+
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = {
+      getThreadLatestActivityTimestamp,
+      isGlobalThread,
+      getThreadStartLine,
+      sortThreads
+    };
+    return;
+  }
+
   const App = root.App;
   const state = App.state;
   const $ = App.$;
@@ -251,13 +320,17 @@
 
   function renderThreads() {
     const list = $('#thread-list');
-    const visibleThreads = state.threads.filter((thread) => state.showResolved || !thread.resolved);
+    const visibleThreads = sortThreads(
+      state.threads.filter((thread) => state.showResolved || !thread.resolved),
+      state.commentSort
+    );
     const canComment = canCommentCurrentProject();
     const canResolve = canEditCurrentProject();
     $('#thread-body').disabled = !canComment;
     $('#btn-add-thread').disabled = !canComment;
     $('#thread-body').placeholder = canComment ? 'New comment...' : 'File access required to comment';
     renderAnchoredComposer();
+    $('#comment-sort').value = state.commentSort;
     if (!visibleThreads.length) {
       list.innerHTML = '<div class="empty-state">No comments for this file.</div>';
       return;
@@ -543,4 +616,4 @@
     syncAnchoredDraftFromStorage,
     updateCommentMarkers
   };
-})(window);
+})(typeof window !== 'undefined' ? window : globalThis);

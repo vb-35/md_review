@@ -57,6 +57,7 @@ const state = {
   lastAppliedDiffAction: null,
   editing: false,
   showResolved: false,
+  commentSort: 'activity-desc',
   currentView: 'dashboard',
   previewTimer: null,
   mathPlaceholders: {},
@@ -654,6 +655,10 @@ function wireEvents() {
   $('#btn-add-thread').addEventListener('click', window.App.comments.createThread);
   $('#show-resolved').addEventListener('change', (event) => {
     state.showResolved = event.target.checked;
+    window.App.comments.renderThreads();
+  });
+  $('#comment-sort').addEventListener('change', (event) => {
+    state.commentSort = event.target.value;
     window.App.comments.renderThreads();
   });
 

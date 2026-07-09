@@ -95,6 +95,20 @@ def test_find_replace_js_helpers():
     print("PASS: find_replace_js_helpers")
 
 
+def test_comments_js_helpers():
+    if not shutil.which('node'):
+        print("SKIP: comments_js_helpers (node not installed)")
+        return
+    result = subprocess.run(
+        ['node', os.path.join(os.path.dirname(__file__), 'webapp/js/comments.test.js')],
+        check=True,
+        capture_output=True,
+        text=True
+    )
+    assert 'PASS: comments sorting helpers' in result.stdout
+    print("PASS: comments_js_helpers")
+
+
 def test_diff_and_renderer():
     diff = compute_diff("alpha beta\n", "alpha gamma\n")
     removed = next(row for row in diff if row['type'] == 'removed')
@@ -172,6 +186,7 @@ if __name__ == '__main__':
     test_invalid_identifier_rejected()
     test_index_exposes_repo_actions()
     test_find_replace_js_helpers()
+    test_comments_js_helpers()
     test_diff_and_renderer()
     test_apply_diff_chunk_replace_and_conflict()
     test_apply_diff_chunk_line_add_remove()
