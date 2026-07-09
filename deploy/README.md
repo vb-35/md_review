@@ -58,3 +58,36 @@ curl -s http://127.0.0.1:18080/api/auth/me
 - Logs are written to `data/server.log`.
 - Login is browser-local: enter any identifier and the browser will reuse it on refresh.
 - If `md-reviewctl` is installed outside the repo, set `MD_REVIEW_ROOT` to the project root or install it as a symlink.
+
+## systemd user service
+
+To run this app under your own user without touching system services, use the user unit in `deploy/systemd/md-review.service`.
+
+This repo includes `deploy/md-review.user.env`, preconfigured to avoid the existing manual instance:
+
+- binds to `127.0.0.1:18082`
+- uses a separate PID file and log file
+- uses a separate database and Flask session directory
+
+Install it:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp deploy/systemd/md-review.service ~/.config/systemd/user/md-review.service
+systemctl --user daemon-reload
+systemctl --user enable --now md-review.service
+```
+
+Useful commands:
+
+```bash
+systemctl --user status md-review.service
+journalctl --user -u md-review.service -f
+tail -f data/server-systemd.log
+```
+
+If you want the user service to survive logout and start at boot, a privileged admin still has to enable linger for your user:
+
+```bash
+sudo loginctl enable-linger $USER
+```

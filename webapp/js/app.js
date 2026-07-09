@@ -10,6 +10,8 @@ const SETTINGS_KEY_THEME = 'md-review.theme';
 const SETTINGS_KEY_SYNC_VIEW = 'md-review.sync-view';
 const SETTINGS_KEY_JUSTIFY_PREVIEW = 'md-review.justify-preview';
 const SETTINGS_KEY_VIEW_MODE = 'md-review.view-mode';
+const SETTINGS_KEY_REPLACE_SHORTCUT = 'md-review.replace-shortcut';
+const SETTINGS_KEY_FONT_SIZE = 'md-review.font-size';
 const AUTH_KEY_IDENTIFIER = 'md-review.identifier';
 const HIGHLIGHT_THEME_DARK = 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css';
 const HIGHLIGHT_THEME_LIGHT = 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css';
@@ -19,11 +21,15 @@ const $ = (sel) => document.querySelector(sel);
 function loadSettings() {
   const theme = localStorage.getItem(SETTINGS_KEY_THEME);
   const viewMode = localStorage.getItem(SETTINGS_KEY_VIEW_MODE);
+  const replaceShortcutKey = localStorage.getItem(SETTINGS_KEY_REPLACE_SHORTCUT);
+  const fontSize = parseInt(localStorage.getItem(SETTINGS_KEY_FONT_SIZE) || '16', 10);
   return {
     theme: theme === 'light' ? 'light' : 'dark',
     syncView: localStorage.getItem(SETTINGS_KEY_SYNC_VIEW) === 'true',
     justifyPreview: localStorage.getItem(SETTINGS_KEY_JUSTIFY_PREVIEW) !== 'false',
-    viewMode: ['view', 'both', 'edit'].includes(viewMode) ? viewMode : 'both'
+    viewMode: ['view', 'both', 'edit'].includes(viewMode) ? viewMode : 'both',
+    replaceShortcutKey: ['h', 'r'].includes(replaceShortcutKey) ? replaceShortcutKey : 'h',
+    fontSize: [14, 16, 18, 20].includes(fontSize) ? fontSize : 16
   };
 }
 
@@ -59,6 +65,8 @@ function saveSettings() {
   localStorage.setItem(SETTINGS_KEY_SYNC_VIEW, String(state.settings.syncView));
   localStorage.setItem(SETTINGS_KEY_JUSTIFY_PREVIEW, String(state.settings.justifyPreview));
   localStorage.setItem(SETTINGS_KEY_VIEW_MODE, state.settings.viewMode);
+  localStorage.setItem(SETTINGS_KEY_REPLACE_SHORTCUT, state.settings.replaceShortcutKey);
+  localStorage.setItem(SETTINGS_KEY_FONT_SIZE, String(state.settings.fontSize));
 }
 
 function applyViewMode(mode) {
@@ -80,13 +88,23 @@ function applyTheme(theme) {
   }
 }
 
+function applyFontSize(fontSize) {
+  const normalized = [14, 16, 18, 20].includes(fontSize) ? fontSize : 16;
+  document.documentElement.style.setProperty('--workspace-font-size', `${normalized}px`);
+}
+
 function applySettings() {
   applyTheme(state.settings.theme);
   applyViewMode(state.settings.viewMode);
+  applyFontSize(state.settings.fontSize);
   const syncToggle = $('#toggle-sync-view');
   if (syncToggle) syncToggle.checked = state.settings.syncView;
   const justifyToggle = $('#toggle-justify-preview');
   if (justifyToggle) justifyToggle.checked = state.settings.justifyPreview;
+  const replaceShortcutSelect = $('#replace-shortcut-select');
+  if (replaceShortcutSelect) replaceShortcutSelect.value = state.settings.replaceShortcutKey;
+  const fontSizeSelect = $('#font-size-select');
+  if (fontSizeSelect) fontSizeSelect.value = String(state.settings.fontSize);
   document.body.classList.toggle('preview-justify-disabled', !state.settings.justifyPreview);
   document.querySelectorAll('input[name="theme"]').forEach((input) => {
     input.checked = input.value === state.settings.theme;
@@ -173,8 +191,15 @@ function insertAtCursor(text) {
   const editor = $('#editor');
   editor.setRangeText(text, editor.selectionStart, editor.selectionEnd, 'end');
   editor.focus();
+  markEditorChanged();
+}
+
+function markEditorChanged() {
   state.editing = true;
   updateEditorPermissions();
+  if (window.App && window.App.preview.schedulePreview) {
+    window.App.preview.schedulePreview();
+  }
 }
 
 function canEditCurrentProject() {
@@ -297,6 +322,9 @@ function updateEditorPermissions() {
   } else {
     $('#btn-lock').textContent = 'Lock';
   }
+  if (window.App.findReplace && window.App.findReplace.refreshMatches) {
+    window.App.findReplace.refreshMatches($('#editor').selectionStart, 'forward');
+  }
 }
 
 function resetEditorState() {
@@ -304,6 +332,9 @@ function resetEditorState() {
   $('#editor').value = '';
   $('#editor-file-label').textContent = 'Source';
   $('#preview').innerHTML = '';
+  if (window.App.findReplace && window.App.findReplace.closeToolbar) {
+    window.App.findReplace.closeToolbar();
+  }
   state.editing = false;
   state.versions = [];
   state.threads = [];
@@ -329,6 +360,7 @@ window.App = {
   },
   helpers: {
     applySettings,
+    applyFontSize,
     applyTheme,
     applyViewMode,
     canCommentCurrentProject,
@@ -344,6 +376,7 @@ window.App = {
     holdsCurrentLock,
     insertAtCursor,
     loadSettings,
+    markEditorChanged,
     resetEditorState,
     saveSettings,
     showDashboard,
@@ -445,9 +478,7 @@ function wireEvents() {
   });
 
   $('#editor').addEventListener('input', () => {
-    state.editing = true;
-    updateEditorPermissions();
-    window.App.preview.schedulePreview();
+    markEditorChanged();
   });
 
   $('#editor').addEventListener('keydown', (event) => {
@@ -459,9 +490,7 @@ function wireEvents() {
       event.preventDefault();
       const editor = $('#editor');
       editor.setRangeText('    ', editor.selectionStart, editor.selectionEnd, 'end');
-      state.editing = true;
-      updateEditorPermissions();
-      window.App.preview.schedulePreview();
+      markEditorChanged();
     }
   });
 
@@ -572,6 +601,19 @@ function wireEvents() {
     applySettings();
   });
 
+  $('#replace-shortcut-select').addEventListener('change', (event) => {
+    state.settings.replaceShortcutKey = event.target.value === 'r' ? 'r' : 'h';
+    saveSettings();
+    applySettings();
+  });
+
+  $('#font-size-select').addEventListener('change', (event) => {
+    const fontSize = parseInt(event.target.value, 10);
+    state.settings.fontSize = [14, 16, 18, 20].includes(fontSize) ? fontSize : 16;
+    saveSettings();
+    applySettings();
+  });
+
   document.querySelectorAll('[data-view-mode]').forEach((button) => {
     button.addEventListener('click', () => {
       state.settings.viewMode = button.dataset.viewMode || 'both';
@@ -585,6 +627,17 @@ function wireEvents() {
   document.addEventListener('click', (event) => {
     const shell = document.querySelector('.settings-shell');
     if (shell && !shell.contains(event.target)) toggleSettingsPanel(false);
+  });
+
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && window.App.findReplace && $('#find-replace-bar') && !$('#find-replace-bar').classList.contains('hidden')) {
+      event.preventDefault();
+      window.App.findReplace.closeToolbar();
+      return;
+    }
+    if (window.App.findReplace) {
+      window.App.findReplace.handleGlobalShortcut(event);
+    }
   });
 }
 
@@ -600,6 +653,9 @@ async function bootstrap() {
     wireEvents();
     applyTheme(state.settings.theme);
     applySettings();
+    if (window.App.findReplace && window.App.findReplace.bindEvents) {
+      window.App.findReplace.bindEvents();
+    }
     window.App.comments.initSelectionListener();
     window.App.preview.initPreviewClickNavigation();
   }

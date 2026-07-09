@@ -43,6 +43,22 @@
               <input type="checkbox" id="toggle-justify-preview">
               <span>Justify preview text</span>
             </label>
+            <div class="settings-group">
+              <label class="settings-label" for="replace-shortcut-select">Replace shortcut</label>
+              <select id="replace-shortcut-select">
+                <option value="h">Ctrl/Cmd + H</option>
+                <option value="r">Ctrl/Cmd + R</option>
+              </select>
+            </div>
+            <div class="settings-group">
+              <label class="settings-label" for="font-size-select">Font size</label>
+              <select id="font-size-select">
+                <option value="14">14</option>
+                <option value="16">16</option>
+                <option value="18">18</option>
+                <option value="20">20</option>
+              </select>
+            </div>
           </div>
         </div>
         <span id="user-display"></span>
@@ -158,7 +174,24 @@
               <button id="btn-upload-image" type="button">Upload Image</button>
             </div>
           </div>
-          <textarea id="editor" spellcheck="false"></textarea>
+          <div id="find-replace-bar" class="find-replace-bar hidden" data-mode="find">
+            <div class="find-replace-main">
+              <input type="text" id="find-input" placeholder="Find">
+              <button id="btn-find-prev" type="button" title="Previous match">Prev</button>
+              <button id="btn-find-next" type="button" title="Next match">Next</button>
+              <span id="find-match-count" class="find-match-count">0 / 0</span>
+            </div>
+            <div class="find-replace-replace">
+              <input type="text" id="replace-input" placeholder="Replace">
+              <button id="btn-replace-one" type="button">Replace</button>
+              <button id="btn-replace-all" type="button">Replace All</button>
+            </div>
+            <button id="btn-find-close" class="find-replace-close" type="button" aria-label="Close find and replace">&times;</button>
+          </div>
+          <div id="editor-shell">
+            <div id="editor-find-highlight" aria-hidden="true"></div>
+            <textarea id="editor" spellcheck="false"></textarea>
+          </div>
         </div>
         <div id="preview-pane">
           <div class="pane-header">Preview</div>
@@ -212,6 +245,7 @@
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/bash.min.js"></script>
   <script src="js/scientific-preview.js"></script>
   <script src="js/app.js"></script>
+  <script src="js/find-replace.js"></script>
   <script src="js/preview.js"></script>
   <script src="js/comments.js"></script>
   <script src="js/projects.js"></script>

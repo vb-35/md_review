@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Tests for MD Review app."""
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
 
@@ -73,7 +75,24 @@ def test_index_exposes_repo_actions():
     assert response.status_code == 200
     html = response.get_data(as_text=True)
     assert 'btn-download-repo' in html
+    assert 'replace-shortcut-select' in html
+    assert 'font-size-select' in html
+    assert 'find-replace-bar' in html
     print("PASS: index_exposes_repo_actions")
+
+
+def test_find_replace_js_helpers():
+    if not shutil.which('node'):
+        print("SKIP: find_replace_js_helpers (node not installed)")
+        return
+    result = subprocess.run(
+        ['node', os.path.join(os.path.dirname(__file__), 'webapp/js/find-replace.test.js')],
+        check=True,
+        capture_output=True,
+        text=True
+    )
+    assert 'PASS: find-replace helpers' in result.stdout
+    print("PASS: find_replace_js_helpers")
 
 
 def test_diff_and_renderer():
@@ -152,6 +171,7 @@ if __name__ == '__main__':
     test_identifier_login_flow()
     test_invalid_identifier_rejected()
     test_index_exposes_repo_actions()
+    test_find_replace_js_helpers()
     test_diff_and_renderer()
     test_apply_diff_chunk_replace_and_conflict()
     test_apply_diff_chunk_line_add_remove()

@@ -1,0 +1,17 @@
+[Unit]
+Description=md_review web app
+After=network.target
+
+[Service]
+Type=forking
+WorkingDirectory=/home/vbordier/md_review
+Environment=MD_REVIEW_ROOT=/home/vbordier/md_review
+EnvironmentFile=/home/vbordier/md_review/deploy/md-review.user.env
+ExecStart=/home/vbordier/md_review/md-reviewctl start
+ExecStop=/home/vbordier/md_review/md-reviewctl stop
+PIDFile=/home/vbordier/md_review/data/md_review-systemd.pid
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

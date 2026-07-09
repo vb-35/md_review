@@ -195,6 +195,7 @@
   async function openMarkdownFile(filePath, switchView = true) {
     state.currentProject = await App.api('GET', `/projects/${state.currentProject.id}`);
     state.currentFile = await App.api('GET', `/projects/${state.currentProject.id}/files/content?path=${encodeURIComponent(filePath)}`);
+    if (App.findReplace && App.findReplace.closeToolbar) App.findReplace.closeToolbar();
     $('#editor').value = state.currentFile.content || '';
     $('#editor-file-label').textContent = state.currentFile.filePath;
     state.editing = false;
