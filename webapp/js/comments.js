@@ -3,6 +3,7 @@
   const state = App.state;
   const $ = App.$;
   const {
+    openSidePanel,
     canCommentCurrentProject,
     canEditCurrentProject,
     currentCommentContext,
@@ -326,7 +327,7 @@
   }
 
   function openThreadInPanel(threadId) {
-    $('#comments-panel').classList.remove('hidden');
+    openSidePanel('comments');
     loadThreads().then(() => {
       const threadEl = document.querySelector(`.thread[data-thread-id="${threadId}"]`);
       const threadList = $('#thread-list');

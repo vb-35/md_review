@@ -12,9 +12,13 @@ const SETTINGS_KEY_JUSTIFY_PREVIEW = 'md-review.justify-preview';
 const SETTINGS_KEY_VIEW_MODE = 'md-review.view-mode';
 const SETTINGS_KEY_REPLACE_SHORTCUT = 'md-review.replace-shortcut';
 const SETTINGS_KEY_FONT_SIZE = 'md-review.font-size';
+const SETTINGS_KEY_SIDE_PANEL_WIDTH = 'md-review.side-panel-width';
 const AUTH_KEY_IDENTIFIER = 'md-review.identifier';
 const HIGHLIGHT_THEME_DARK = 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css';
 const HIGHLIGHT_THEME_LIGHT = 'https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github.min.css';
+const SIDE_PANEL_DEFAULT_WIDTH = 420;
+const SIDE_PANEL_MIN_WIDTH = 280;
+const SIDE_PANEL_MIN_MAIN_WIDTH = 320;
 
 const $ = (sel) => document.querySelector(sel);
 
@@ -23,13 +27,15 @@ function loadSettings() {
   const viewMode = localStorage.getItem(SETTINGS_KEY_VIEW_MODE);
   const replaceShortcutKey = localStorage.getItem(SETTINGS_KEY_REPLACE_SHORTCUT);
   const fontSize = parseInt(localStorage.getItem(SETTINGS_KEY_FONT_SIZE) || '16', 10);
+  const sidePanelWidth = parseInt(localStorage.getItem(SETTINGS_KEY_SIDE_PANEL_WIDTH) || String(SIDE_PANEL_DEFAULT_WIDTH), 10);
   return {
     theme: theme === 'light' ? 'light' : 'dark',
     syncView: localStorage.getItem(SETTINGS_KEY_SYNC_VIEW) === 'true',
     justifyPreview: localStorage.getItem(SETTINGS_KEY_JUSTIFY_PREVIEW) !== 'false',
     viewMode: ['view', 'both', 'edit'].includes(viewMode) ? viewMode : 'both',
     replaceShortcutKey: ['h', 'r'].includes(replaceShortcutKey) ? replaceShortcutKey : 'h',
-    fontSize: [14, 16, 18, 20].includes(fontSize) ? fontSize : 16
+    fontSize: [14, 16, 18, 20].includes(fontSize) ? fontSize : 16,
+    sidePanelWidth: Number.isFinite(sidePanelWidth) ? sidePanelWidth : SIDE_PANEL_DEFAULT_WIDTH
   };
 }
 
@@ -56,6 +62,8 @@ const state = {
   mathPlaceholders: {},
   placeholderCounter: 0,
   settings: loadSettings(),
+  activeSidePanel: 'none',
+  sidePanelResize: null,
   syncingScroll: false,
   initialized: false
 };
@@ -67,6 +75,7 @@ function saveSettings() {
   localStorage.setItem(SETTINGS_KEY_VIEW_MODE, state.settings.viewMode);
   localStorage.setItem(SETTINGS_KEY_REPLACE_SHORTCUT, state.settings.replaceShortcutKey);
   localStorage.setItem(SETTINGS_KEY_FONT_SIZE, String(state.settings.fontSize));
+  localStorage.setItem(SETTINGS_KEY_SIDE_PANEL_WIDTH, String(state.settings.sidePanelWidth));
 }
 
 function applyViewMode(mode) {
@@ -78,6 +87,50 @@ function applyViewMode(mode) {
     button.classList.toggle('active', active);
     button.setAttribute('aria-pressed', active ? 'true' : 'false');
   });
+}
+
+function isMobileSidePanelLayout() {
+  return window.innerWidth <= 768;
+}
+
+function clampSidePanelWidth(width) {
+  const splitView = $('#split-view');
+  const parsedWidth = Number.isFinite(width) ? width : SIDE_PANEL_DEFAULT_WIDTH;
+  if (!splitView) return Math.max(SIDE_PANEL_MIN_WIDTH, parsedWidth);
+  const visibleMainPanes = state.settings.viewMode === 'both' ? 2 : 1;
+  const maxWidth = splitView.clientWidth - (visibleMainPanes * SIDE_PANEL_MIN_MAIN_WIDTH);
+  if (maxWidth <= SIDE_PANEL_MIN_WIDTH) return SIDE_PANEL_MIN_WIDTH;
+  return Math.min(Math.max(parsedWidth, SIDE_PANEL_MIN_WIDTH), maxWidth);
+}
+
+function applySidePanelLayout() {
+  const splitView = $('#split-view');
+  const sideRail = $('#side-rail');
+  const resizer = $('#side-panel-resizer');
+  if (!splitView || !sideRail || !resizer) return;
+  const activePanel = state.activeSidePanel;
+  const isOpen = activePanel !== 'none';
+  const isMobile = isMobileSidePanelLayout();
+  const width = clampSidePanelWidth(state.settings.sidePanelWidth);
+  state.settings.sidePanelWidth = width;
+  splitView.style.setProperty('--side-panel-width', `${width}px`);
+  splitView.dataset.sidePanelOpen = isOpen ? 'true' : 'false';
+  splitView.dataset.sidePanel = activePanel;
+  sideRail.dataset.activePanel = activePanel;
+  sideRail.classList.toggle('hidden', !isOpen);
+  resizer.classList.toggle('hidden', !isOpen || isMobile);
+  $('#review-panel').classList.toggle('hidden', activePanel !== 'review');
+  $('#comments-panel').classList.toggle('hidden', activePanel !== 'comments');
+}
+
+function openSidePanel(panelName) {
+  state.activeSidePanel = panelName === 'review' || panelName === 'comments' ? panelName : 'none';
+  applySidePanelLayout();
+}
+
+function closeSidePanel() {
+  state.activeSidePanel = 'none';
+  applySidePanelLayout();
 }
 
 function applyTheme(theme) {
@@ -109,6 +162,7 @@ function applySettings() {
   document.querySelectorAll('input[name="theme"]').forEach((input) => {
     input.checked = input.value === state.settings.theme;
   });
+  applySidePanelLayout();
 }
 
 function toggleSettingsPanel(forceOpen) {
@@ -228,8 +282,33 @@ function currentCommentContext() {
 }
 
 function closePanels() {
-  $('#review-panel').classList.add('hidden');
-  $('#comments-panel').classList.add('hidden');
+  closeSidePanel();
+}
+
+function startSidePanelResize(event) {
+  if (isMobileSidePanelLayout() || state.activeSidePanel === 'none') return;
+  event.preventDefault();
+  state.sidePanelResize = {
+    pointerId: event.pointerId,
+    startX: event.clientX,
+    startWidth: clampSidePanelWidth(state.settings.sidePanelWidth)
+  };
+  document.body.classList.add('is-resizing-side-panel');
+}
+
+function handleSidePanelResize(event) {
+  if (!state.sidePanelResize) return;
+  const delta = state.sidePanelResize.startX - event.clientX;
+  state.settings.sidePanelWidth = clampSidePanelWidth(state.sidePanelResize.startWidth + delta);
+  applySidePanelLayout();
+}
+
+function stopSidePanelResize(event) {
+  if (!state.sidePanelResize) return;
+  if (event && typeof event.pointerId === 'number' && state.sidePanelResize.pointerId !== event.pointerId) return;
+  state.sidePanelResize = null;
+  document.body.classList.remove('is-resizing-side-panel');
+  saveSettings();
 }
 
 function showTopbar() {
@@ -344,6 +423,7 @@ function resetEditorState() {
   state.comparedDiffBaselineContent = '';
   state.comparedDiffDecisions = {};
   state.lastAppliedDiffAction = null;
+  state.activeSidePanel = 'none';
   closePanels();
 }
 
@@ -362,21 +442,26 @@ window.App = {
     applySettings,
     applyFontSize,
     applyTheme,
+    applySidePanelLayout,
     applyViewMode,
     canCommentCurrentProject,
     canEditCurrentProject,
     canManageShares,
     capitalize,
+    closeSidePanel,
     clearStoredIdentifier,
     closePanels,
+    clampSidePanelWidth,
     currentCommentContext,
     esc,
     formatDate,
     getStoredIdentifier,
     holdsCurrentLock,
+    isMobileSidePanelLayout,
     insertAtCursor,
     loadSettings,
     markEditorChanged,
+    openSidePanel,
     resetEditorState,
     saveSettings,
     showDashboard,
@@ -534,11 +619,11 @@ function wireEvents() {
 
   $('#btn-review').addEventListener('click', async () => {
     if (!state.currentFile) return;
-    $('#review-panel').classList.remove('hidden');
+    openSidePanel('review');
     await window.App.projects.loadVersions();
   });
 
-  $('#btn-close-review').addEventListener('click', () => $('#review-panel').classList.add('hidden'));
+  $('#btn-close-review').addEventListener('click', closeSidePanel);
 
   $('#version-select-base').addEventListener('change', (event) => {
     state.selectedBaseId = event.target.value;
@@ -553,16 +638,22 @@ function wireEvents() {
 
   $('#btn-threads').addEventListener('click', async () => {
     if (!state.currentFile) return;
-    $('#comments-panel').classList.remove('hidden');
+    openSidePanel('comments');
     await window.App.comments.loadThreads();
   });
 
-  $('#btn-close-comments').addEventListener('click', () => $('#comments-panel').classList.add('hidden'));
+  $('#btn-close-comments').addEventListener('click', closeSidePanel);
   $('#btn-add-thread').addEventListener('click', window.App.comments.createThread);
   $('#show-resolved').addEventListener('change', (event) => {
     state.showResolved = event.target.checked;
     window.App.comments.renderThreads();
   });
+
+  $('#side-panel-resizer').addEventListener('pointerdown', startSidePanelResize);
+  window.addEventListener('pointermove', handleSidePanelResize);
+  window.addEventListener('pointerup', stopSidePanelResize);
+  window.addEventListener('pointercancel', stopSidePanelResize);
+  window.addEventListener('resize', applySidePanelLayout);
 
   $('#share-form').addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -619,6 +710,7 @@ function wireEvents() {
       state.settings.viewMode = button.dataset.viewMode || 'both';
       saveSettings();
       applyViewMode(state.settings.viewMode);
+      applySidePanelLayout();
     });
   });
 

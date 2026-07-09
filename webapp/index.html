@@ -197,44 +197,46 @@
           <div class="pane-header">Preview</div>
           <div id="preview" class="markdown-body"></div>
         </div>
-      </div>
-    </main>
+        <div id="side-panel-resizer" class="side-panel-resizer hidden" aria-hidden="true"></div>
+        <div id="side-rail" class="hidden" data-active-panel="none">
+          <div id="review-panel" class="panel side-panel hidden">
+            <div class="panel-header">
+              <h3>Version History</h3>
+              <button id="btn-close-review" class="panel-close">&times;</button>
+            </div>
+            <div id="version-actions">
+              <button id="btn-select-base">Select Base</button>
+              <button id="btn-select-head">Select Head</button>
+              <button id="btn-compare">Diff</button>
+            </div>
+            <select id="version-select-base"></select>
+            <select id="version-select-head"></select>
+            <div id="diff-view"></div>
+            <div id="version-diff-actions" class="hidden">
+              <button id="btn-revert" class="btn-revert">Revert to this version</button>
+              <span id="diff-meta"></span>
+            </div>
+          </div>
 
-    <div id="review-panel" class="panel hidden">
-      <div class="panel-header">
-        <h3>Version History</h3>
-        <button id="btn-close-review" class="panel-close">&times;</button>
-      </div>
-      <div id="version-actions">
-        <button id="btn-select-base">Select Base</button>
-        <button id="btn-select-head">Select Head</button>
-        <button id="btn-compare">Diff</button>
-      </div>
-      <select id="version-select-base"></select>
-      <select id="version-select-head"></select>
-      <div id="diff-view"></div>
-      <div id="version-diff-actions" class="hidden">
-        <button id="btn-revert" class="btn-revert">Revert to this version</button>
-        <span id="diff-meta"></span>
-      </div>
-    </div>
-
-    <div id="comments-panel" class="panel hidden">
-      <div class="panel-header">
-        <h3>Comments</h3>
-        <div class="comments-panel-actions">
-          <label>
-            <input type="checkbox" id="show-resolved"> Show resolved
-          </label>
-          <button id="btn-close-comments" class="panel-close">&times;</button>
+          <div id="comments-panel" class="panel side-panel hidden">
+            <div class="panel-header">
+              <h3>Comments</h3>
+              <div class="comments-panel-actions">
+                <label>
+                  <input type="checkbox" id="show-resolved"> Show resolved
+                </label>
+                <button id="btn-close-comments" class="panel-close">&times;</button>
+              </div>
+            </div>
+            <div id="thread-list"></div>
+            <div id="new-thread" class="new-thread">
+              <input type="text" id="thread-body" placeholder="New comment...">
+              <button id="btn-add-thread">Post</button>
+            </div>
+          </div>
         </div>
       </div>
-      <div id="thread-list"></div>
-      <div id="new-thread" class="new-thread">
-        <input type="text" id="thread-body" placeholder="New comment...">
-        <button id="btn-add-thread">Post</button>
-      </div>
-    </div>
+    </main>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
