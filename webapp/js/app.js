@@ -619,6 +619,10 @@ function wireEvents() {
 
   $('#btn-review').addEventListener('click', async () => {
     if (!state.currentFile) return;
+    if (state.activeSidePanel === 'review') {
+      closeSidePanel();
+      return;
+    }
     openSidePanel('review');
     await window.App.projects.loadVersions();
   });
@@ -638,6 +642,10 @@ function wireEvents() {
 
   $('#btn-threads').addEventListener('click', async () => {
     if (!state.currentFile) return;
+    if (state.activeSidePanel === 'comments') {
+      closeSidePanel();
+      return;
+    }
     openSidePanel('comments');
     await window.App.comments.loadThreads();
   });
