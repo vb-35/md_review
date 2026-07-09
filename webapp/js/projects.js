@@ -52,6 +52,9 @@
     state.projectShares = canManageShares() ? await App.api('GET', `/projects/${projectId}/shares`) : [];
     state.currentFile = null;
     state.editing = false;
+    if (App.comments && App.comments.syncAnchoredDraftFromStorage) {
+      App.comments.syncAnchoredDraftFromStorage();
+    }
     renderProjectLists();
     renderProjectDetail();
     updateHeader();
@@ -185,6 +188,9 @@
       $('#editor-file-label').textContent = 'Source';
       $('#preview').innerHTML = '';
       state.editing = false;
+      if (App.comments && App.comments.syncAnchoredDraftFromStorage) {
+        App.comments.syncAnchoredDraftFromStorage();
+      }
       return;
     }
     if (typeof nextCurrentFilePath === 'string' && nextCurrentFilePath) {
@@ -207,6 +213,9 @@
     $('#diff-meta').textContent = '';
     $('#version-diff-actions').classList.add('hidden');
     App.preview.updatePreview();
+    if (App.comments && App.comments.syncAnchoredDraftFromStorage) {
+      App.comments.syncAnchoredDraftFromStorage();
+    }
     updateHeader();
     if (switchView) showEditor();
   }

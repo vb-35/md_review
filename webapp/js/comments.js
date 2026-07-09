@@ -11,6 +11,8 @@
     formatDate
   } = App.helpers;
 
+  const ANCHORED_DRAFT_STORAGE_PREFIX = 'md-review:anchored-comment-draft:';
+
   function getAnchorSelectedText(anchor) {
     if (anchor && anchor.selectedText && anchor.selectedText.trim()) return anchor.selectedText.trim();
     if (!anchor || typeof anchor.startOffset !== 'number' || typeof anchor.endOffset !== 'number') return '';
@@ -108,6 +110,108 @@
     return true;
   }
 
+  function getDraftStorageKey(context) {
+    if (!context) return '';
+    return `${ANCHORED_DRAFT_STORAGE_PREFIX}${context.projectId}:${context.filePath}:${context.commitSha}`;
+  }
+
+  function normalizeAnchor(anchor) {
+    if (!anchor || !anchor.startLine || !anchor.endLine) return null;
+    return {
+      startLine: anchor.startLine,
+      endLine: anchor.endLine,
+      startOffset: typeof anchor.startOffset === 'number' ? anchor.startOffset : null,
+      endOffset: typeof anchor.endOffset === 'number' ? anchor.endOffset : null,
+      selectedText: anchor.selectedText || ''
+    };
+  }
+
+  function anchorsEqual(left, right) {
+    if (!left || !right) return false;
+    return left.startLine === right.startLine
+      && left.endLine === right.endLine
+      && left.startOffset === right.startOffset
+      && left.endOffset === right.endOffset
+      && (left.selectedText || '') === (right.selectedText || '');
+  }
+
+  function loadAnchoredDraft(context = currentCommentContext()) {
+    const key = getDraftStorageKey(context);
+    if (!key) return null;
+    try {
+      const raw = root.localStorage.getItem(key);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw);
+      if (!parsed || typeof parsed.body !== 'string') return null;
+      const anchor = normalizeAnchor(parsed.anchor);
+      if (!anchor) return null;
+      return {
+        body: parsed.body,
+        anchor,
+        updatedAt: parsed.updatedAt || null
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function saveAnchoredDraft(draft, context = currentCommentContext()) {
+    const key = getDraftStorageKey(context);
+    if (!key || !draft || !draft.anchor) return;
+    root.localStorage.setItem(key, JSON.stringify({
+      body: draft.body || '',
+      anchor: normalizeAnchor(draft.anchor),
+      updatedAt: new Date().toISOString()
+    }));
+  }
+
+  function clearAnchoredDraft(context = currentCommentContext()) {
+    const key = getDraftStorageKey(context);
+    if (!key) return;
+    root.localStorage.removeItem(key);
+  }
+
+  function getAnchoredDraftElements() {
+    return {
+      composer: $('#anchored-thread-composer'),
+      anchor: $('#anchored-thread-anchor'),
+      body: $('#anchored-thread-body'),
+      post: $('#btn-post-anchored-thread'),
+      discard: $('#btn-discard-anchored-thread')
+    };
+  }
+
+  function closeAnchoredComposer() {
+    state.pendingAnchoredComment = null;
+    const elements = getAnchoredDraftElements();
+    elements.composer.classList.add('hidden');
+    elements.anchor.innerHTML = '';
+    elements.body.value = '';
+  }
+
+  function renderAnchoredComposer() {
+    const elements = getAnchoredDraftElements();
+    const canComment = canCommentCurrentProject();
+    const pending = state.pendingAnchoredComment;
+    if (!pending || !pending.anchor) {
+      closeAnchoredComposer();
+      return;
+    }
+    elements.composer.classList.remove('hidden');
+    elements.anchor.innerHTML = getAnchorLabel(pending.anchor);
+    if (elements.body.value !== (pending.body || '')) {
+      elements.body.value = pending.body || '';
+    }
+    elements.body.disabled = !canComment;
+    elements.post.disabled = !canComment || !elements.body.value.trim();
+    elements.discard.disabled = false;
+  }
+
+  function syncAnchoredDraftFromStorage() {
+    state.pendingAnchoredComment = loadAnchoredDraft();
+    renderAnchoredComposer();
+  }
+
   function updateCommentMarkers() {
     const preview = $('#preview');
     preview.querySelectorAll('.comment-indicator').forEach((marker) => marker.remove());
@@ -131,6 +235,7 @@
 
   async function loadThreads() {
     const context = currentCommentContext();
+    syncAnchoredDraftFromStorage();
     if (!context) {
       state.threads = [];
       renderThreads();
@@ -152,6 +257,7 @@
     $('#thread-body').disabled = !canComment;
     $('#btn-add-thread').disabled = !canComment;
     $('#thread-body').placeholder = canComment ? 'New comment...' : 'File access required to comment';
+    renderAnchoredComposer();
     if (!visibleThreads.length) {
       list.innerHTML = '<div class="empty-state">No comments for this file.</div>';
       return;
@@ -208,7 +314,7 @@
       div.appendChild(replySection);
 
       div.addEventListener('click', (event) => {
-        if (event.target.closest('.btn-resolve') || event.target.closest('.btn-delete-thread') || event.target.tagName === 'INPUT' || event.target.tagName === 'BUTTON') return;
+        if (event.target.closest('.btn-resolve') || event.target.closest('.btn-delete-thread') || event.target.tagName === 'INPUT' || event.target.tagName === 'BUTTON' || event.target.tagName === 'TEXTAREA') return;
         openThreadInPanel(thread.id);
       });
 
@@ -248,7 +354,38 @@
     });
   }
 
-  function showCommentPrompt(range, anchor) {
+  function focusAnchoredComposer() {
+    getAnchoredDraftElements().body.focus();
+  }
+
+  async function activateAnchoredDraft(anchor, options = {}) {
+    const context = currentCommentContext();
+    if (!context) return;
+    const normalizedAnchor = normalizeAnchor(anchor);
+    if (!normalizedAnchor) return;
+    const existing = loadAnchoredDraft(context);
+    if (existing && !anchorsEqual(existing.anchor, normalizedAnchor)) {
+      const shouldReplace = window.confirm('You already have an unsaved anchored comment for this file version. Discard it and start a new one?');
+      if (!shouldReplace) {
+        state.pendingAnchoredComment = existing;
+        openSidePanel('comments');
+        await loadThreads();
+        if (options.focus !== false) focusAnchoredComposer();
+        return;
+      }
+    }
+    state.pendingAnchoredComment = {
+      body: '',
+      anchor: normalizedAnchor,
+      updatedAt: new Date().toISOString()
+    };
+    saveAnchoredDraft(state.pendingAnchoredComment, context);
+    openSidePanel('comments');
+    await loadThreads();
+    if (options.focus !== false) focusAnchoredComposer();
+  }
+
+  function showCommentPrompt(range, preparedAnchor) {
     const existing = document.querySelector('.selection-comment-prompt');
     if (existing) existing.remove();
     const rect = range.getBoundingClientRect();
@@ -269,30 +406,7 @@
     popup.querySelector('button').addEventListener('click', async (event) => {
       event.stopPropagation();
       popup.remove();
-      const body = window.prompt('Enter your comment:');
-      if (!body || !body.trim()) return;
-      const selection = window.getSelection();
-      const selectedText = selection ? selection.toString().trim() : '';
-      const offsets = App.preview.getSourceOffsetsFromPreviewSelection(anchor.startLine, anchor.endLine, selectedText);
-      try {
-        const context = currentCommentContext();
-        if (!context) throw new Error('Missing comment context for current file version');
-        await App.api('POST', '/comments/threads', {
-          ...context,
-          body: body.trim(),
-          anchor: {
-            startLine: anchor.startLine,
-            endLine: anchor.endLine,
-            startOffset: offsets ? offsets.startOffset : null,
-            endOffset: offsets ? offsets.endOffset : null,
-            selectedText
-          }
-        });
-        await loadThreads();
-        updateCommentMarkers();
-      } catch (error) {
-        alert(`Failed to create thread: ${error.message}`);
-      }
+      await activateAnchoredDraft(preparedAnchor);
     });
     document.body.appendChild(popup);
     const dismissHandler = (event) => {
@@ -316,12 +430,19 @@
         if (!selection || selection.isCollapsed || !selection.rangeCount) return;
         const range = selection.getRangeAt(0);
         if (!preview.contains(range.commonAncestorContainer)) return;
-        const text = selection.toString().trim();
-        if (!text || text.length < 2) return;
+        const selectedText = selection.toString().trim();
+        if (!selectedText || selectedText.length < 2) return;
         const startLine = App.preview.getSelectionLine(range.startContainer);
         const endLine = App.preview.getSelectionLine(range.endContainer);
         if (!startLine || !endLine) return;
-        showCommentPrompt(range, { startLine, endLine });
+        const offsets = App.preview.getSourceOffsetsFromPreviewSelection(startLine, endLine, selectedText);
+        showCommentPrompt(range, {
+          startLine,
+          endLine,
+          startOffset: offsets ? offsets.startOffset : null,
+          endOffset: offsets ? offsets.endOffset : null,
+          selectedText
+        });
       }, 200);
     });
   }
@@ -362,7 +483,53 @@
     await loadThreads();
   }
 
+  async function postAnchoredThread() {
+    const context = currentCommentContext();
+    const pending = state.pendingAnchoredComment;
+    if (!context || !pending || !pending.anchor) return;
+    const body = ($('#anchored-thread-body').value || '').trim();
+    if (!body) return;
+    await App.api('POST', '/comments/threads', {
+      ...context,
+      body,
+      anchor: pending.anchor
+    });
+    clearAnchoredDraft(context);
+    closeAnchoredComposer();
+    await loadThreads();
+    updateCommentMarkers();
+  }
+
+  function discardAnchoredThread() {
+    clearAnchoredDraft();
+    closeAnchoredComposer();
+  }
+
+  function handleAnchoredDraftInput() {
+    const pending = state.pendingAnchoredComment;
+    if (!pending || !pending.anchor) return;
+    pending.body = $('#anchored-thread-body').value;
+    saveAnchoredDraft(pending);
+    getAnchoredDraftElements().post.disabled = !pending.body.trim();
+  }
+
+  function bindComposerEvents() {
+    $('#anchored-thread-body').addEventListener('input', handleAnchoredDraftInput);
+    $('#btn-post-anchored-thread').addEventListener('click', async () => {
+      try {
+        await postAnchoredThread();
+      } catch (error) {
+        alert(`Failed to create thread: ${error.message}`);
+      }
+    });
+    $('#btn-discard-anchored-thread').addEventListener('click', () => {
+      discardAnchoredThread();
+    });
+  }
+
   App.comments = {
+    activateAnchoredDraft,
+    bindComposerEvents,
     clearThreadHighlights,
     createThread,
     getAnchorLabel,
@@ -373,6 +540,7 @@
     openThreadInPanel,
     renderThreads,
     scrollElementIntoContainer,
+    syncAnchoredDraftFromStorage,
     updateCommentMarkers
   };
 })(window);

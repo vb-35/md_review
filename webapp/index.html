@@ -228,6 +228,17 @@
                 <button id="btn-close-comments" class="panel-close">&times;</button>
               </div>
             </div>
+            <div id="anchored-thread-composer" class="anchored-thread-composer hidden">
+              <div class="anchored-thread-header">
+                <span>Draft comment</span>
+                <button id="btn-discard-anchored-thread" type="button" class="danger">Discard</button>
+              </div>
+              <div id="anchored-thread-anchor"></div>
+              <textarea id="anchored-thread-body" rows="4" placeholder="Write a comment..."></textarea>
+              <div class="anchored-thread-actions">
+                <button id="btn-post-anchored-thread" type="button">Post</button>
+              </div>
+            </div>
             <div id="thread-list"></div>
             <div id="new-thread" class="new-thread">
               <input type="text" id="thread-body" placeholder="New comment...">

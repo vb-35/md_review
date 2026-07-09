@@ -1153,6 +1153,59 @@ body.preview-justify-disabled .markdown-body ol {
   padding: 8px 12px;
 }
 
+.anchored-thread-composer {
+  margin: 0 0 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-hover);
+}
+
+.anchored-thread-header,
+.anchored-thread-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.anchored-thread-header {
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.anchored-thread-composer .anchor-info {
+  padding: 10px 12px;
+  border: 1px solid var(--subtle-border);
+  border-radius: 8px;
+  background: var(--bg-surface);
+  margin-bottom: 10px;
+}
+
+.anchored-thread-composer .anchor-quote {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.anchored-thread-composer .anchor-lines {
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.anchored-thread-composer textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  margin-bottom: 10px;
+}
+
 .new-thread {
   padding: 12px;
   border-top: 1px solid var(--border);

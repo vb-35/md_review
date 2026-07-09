@@ -756,6 +756,9 @@ async function bootstrap() {
     if (window.App.findReplace && window.App.findReplace.bindEvents) {
       window.App.findReplace.bindEvents();
     }
+    if (window.App.comments && window.App.comments.bindComposerEvents) {
+      window.App.comments.bindComposerEvents();
+    }
     window.App.comments.initSelectionListener();
     window.App.preview.initPreviewClickNavigation();
   }
