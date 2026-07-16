@@ -161,15 +161,20 @@
     if (action === 'rename') {
       const nextPath = window.prompt('New path', item.path);
       if (!nextPath || nextPath === item.path) return;
-      await App.api('POST', `/projects/${state.currentProject.id}/rename`, { oldPath: item.path, newPath: nextPath });
-      await refreshProjectState(item.isMarkdown && state.currentFile && state.currentFile.filePath === item.path ? nextPath : null);
+      const currentPath = state.currentFile && state.currentFile.filePath;
+      const renamedCurrentPath = currentPath === item.path ? nextPath : (currentPath && currentPath.startsWith(`${item.path}/`) ? `${nextPath}${currentPath.slice(item.path.length)}` : null);
+      const result = await App.api('POST', `/projects/${state.currentProject.id}/rename`, { oldPath: item.path, newPath: nextPath });
+      if (state.currentFile && !renamedCurrentPath) state.currentFile.currentCommitSha = result.currentCommitSha;
+      await refreshProjectState(renamedCurrentPath);
       return;
     }
     if (action === 'delete') {
       if (!window.confirm(`Delete ${item.path}?`)) return;
-      await App.api('DELETE', `/projects/${state.currentProject.id}/files`, { path: item.path });
-      const wasCurrent = state.currentFile && state.currentFile.filePath === item.path;
-      await refreshProjectState(wasCurrent ? '' : null);
+      const currentPath = state.currentFile && state.currentFile.filePath;
+      const removesCurrent = currentPath === item.path || (currentPath && currentPath.startsWith(`${item.path}/`));
+      const result = await App.api('DELETE', `/projects/${state.currentProject.id}/files`, { path: item.path });
+      if (state.currentFile && !removesCurrent) state.currentFile.currentCommitSha = result.currentCommitSha;
+      await refreshProjectState(removesCurrent ? '' : null);
     }
   }
 

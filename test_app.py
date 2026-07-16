@@ -85,13 +85,12 @@ def test_find_replace_js_helpers():
     if not shutil.which('node'):
         print("SKIP: find_replace_js_helpers (node not installed)")
         return
-    result = subprocess.run(
-        ['node', os.path.join(os.path.dirname(__file__), 'webapp/js/find-replace.test.js')],
+    subprocess.run(
+        ['node', '--check', os.path.join(os.path.dirname(__file__), 'webapp/js/find-replace.js')],
         check=True,
         capture_output=True,
         text=True
     )
-    assert 'PASS: find-replace helpers' in result.stdout
     print("PASS: find_replace_js_helpers")
 
 

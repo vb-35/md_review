@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tarfile
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
@@ -53,6 +54,14 @@ try:
     assert project['currentCommitSha'] is None
     print("PASS: create_project")
 
+    response = client.post('/api/projects', json={'title': 'Unsafe', 'projectPath': '.'})
+    assert response.status_code == 400, response.data
+    print("PASS: client_project_path_rejected")
+
+    response = client.post(f'/api/projects/{project_id}/lock')
+    assert response.status_code == 200, response.data
+    print("PASS: owner_lock")
+
     response = client.post(f'/api/projects/{project_id}/files', json={'path': 'docs/spec.md', 'content': '# Start\n'})
     assert response.status_code == 201, response.data
     first_commit = response.get_json()['currentCommitSha']
@@ -79,20 +88,47 @@ try:
     assert response.status_code == 403
     print("PASS: viewer_cannot_edit")
 
+    response = client.delete(f'/api/projects/{project_id}/lock')
+    assert response.status_code == 200, response.data
+    print("PASS: owner_unlock")
+
     response = editor_client.post(f'/api/projects/{project_id}/lock')
     assert response.status_code == 200
     print("PASS: editor_lock")
 
-    response = editor_client.put(f'/api/projects/{project_id}/files/content', json={'path': 'docs/spec.md', 'content': '# Updated\n'})
+    response = client.post(f'/api/projects/{project_id}/lock')
+    assert response.status_code == 423, response.data
+    response = editor_client.delete(f'/api/projects/{project_id}/files', json={'path': '.'})
+    assert response.status_code == 400, response.data
+    response = editor_client.delete(f'/api/projects/{project_id}/files', json={'path': '.git'})
+    assert response.status_code == 400, response.data
+    assert os.path.exists(os.path.join(Config.REPO_ROOT, project['projectPath'], 'docs', 'spec.md'))
+    print("PASS: atomic_lock_and_root_deletion_blocked")
+
+    response = editor_client.put(f'/api/projects/{project_id}/files/content', json={'path': 'docs/spec.md', 'content': '# Updated\n', 'baseCommitSha': first_commit})
     assert response.status_code == 200, response.data
     second_commit = response.get_json()['currentCommitSha']
     assert second_commit and second_commit != first_commit
     print("PASS: editor_save")
+    response = editor_client.put(f'/api/projects/{project_id}/files/content', json={
+        'path': 'docs/spec.md',
+        'content': '# Stale overwrite\n',
+        'baseCommitSha': first_commit,
+    })
+    assert response.status_code == 409, response.data
+    print("PASS: stale_save_rejected")
+
 
     response = editor_client.get(f'/api/projects/{project_id}/files/versions?path=docs/spec.md')
     assert response.status_code == 200
     versions = response.get_json()
     assert len(versions) == 2
+    assert all('content' not in version and 'diff' not in version for version in versions)
+    with app.app_context():
+        stored_diff_count = get_db().execute(
+            "SELECT COUNT(*) FROM file_versions WHERE project_id = ? AND diff IS NOT NULL", (project_id,)
+        ).fetchone()[0]
+    assert stored_diff_count == 0
     print("PASS: list_versions")
 
     response = editor_client.post(f'/api/projects/{project_id}/files/compare', json={
@@ -142,6 +178,7 @@ try:
     response = editor_client.put(f'/api/projects/{project_id}/files/content', json={
         'path': 'docs/spec.md',
         'content': applied_content,
+        'baseCommitSha': second_commit,
     })
     assert response.status_code == 200, response.data
     print("PASS: apply_diff_chunk_and_save")
@@ -160,6 +197,27 @@ try:
     assert response.status_code == 200
     assert any(thread['id'] == thread_id for thread in response.get_json())
     print("PASS: comment_thread")
+
+    malicious_context = {**context, 'commitSha': '../../../../../../escaped'}
+    response = viewer_client.post('/api/comments/threads', json={**malicious_context, 'body': 'escape'})
+    assert response.status_code == 400, response.data
+    assert not os.path.exists(os.path.join(Config.REPO_ROOT, 'escaped.json'))
+    print("PASS: comment_commit_traversal_blocked")
+
+    def add_concurrent_reply(index):
+        local_client = app.test_client()
+        login(local_client, 'viewer')
+        reply = local_client.post('/api/comment-lines', json={**context, 'threadId': thread_id, 'body': f'Reply {index}'})
+        return reply.status_code
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        statuses = list(pool.map(add_concurrent_reply, range(8)))
+    assert statuses == [201] * 8, statuses
+    response = viewer_client.get(f"/api/projects/{project_id}/threads?commitSha={second_commit}&filePath=docs/spec.md")
+    assert response.status_code == 200
+    saved_thread = next(thread for thread in response.get_json() if thread['id'] == thread_id)
+    assert len(saved_thread['comments']) == 10
+    print("PASS: concurrent_comment_updates_preserved")
 
     response = viewer_client.post(f'/api/comments/threads/{thread_id}/resolve', json=context)
     assert response.status_code == 403
@@ -185,9 +243,16 @@ try:
         'newPath': 'docs/final.md',
     })
     assert response.status_code == 200
+    rename_commit = response.get_json()['currentCommitSha']
     response = editor_client.get(f'/api/projects/{project_id}/files/content?path=docs/final.md')
     assert response.status_code == 200
     assert response.get_json()['content'] == '# Start\n'
+    response = viewer_client.get(
+        f'/api/projects/{project_id}/threads',
+        query_string={'commitSha': rename_commit, 'filePath': 'docs/final.md'},
+    )
+    renamed_thread = next(thread for thread in response.get_json() if thread['id'] == thread_id)
+    assert renamed_thread['filePath'] == 'docs/final.md' and len(renamed_thread['comments']) == 10
     print("PASS: rename_markdown_file")
 
     response = editor_client.delete(f'/api/projects/{project_id}/files', json={'path': 'assets/logo.svg'})

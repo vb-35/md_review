@@ -1,3 +1,4 @@
+import fcntl
 import json
 import os
 import re
@@ -5,8 +6,11 @@ import shutil
 import subprocess
 import tarfile
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
 
+COMMIT_SHA_RE = re.compile(r'^[0-9a-fA-F]{40,64}$')
+RESERVED_PROJECT_PATHS = {'.git', '.md-review'}
 
 def slugify_filename(title):
     slug = re.sub(r'[^a-z0-9]+', '-', (title or '').strip().lower()).strip('-')
@@ -27,7 +31,11 @@ def get_projects_root():
     from config import Config
 
     projects_dir = getattr(Config, 'PROJECTS_DIR', '.md-review/projects').strip() or '.md-review/projects'
-    return (get_storage_root() / projects_dir).resolve()
+    storage_root = get_storage_root()
+    projects_root = (storage_root / projects_dir).resolve()
+    if projects_root == storage_root or storage_root not in projects_root.parents:
+        raise ValueError('Project storage must be inside the configured repository root')
+    return projects_root
 
 
 def default_project_path(project_id, title):
@@ -41,8 +49,9 @@ def resolve_project_root(project_path):
     storage_root = get_storage_root()
     rel_path = normalize_project_relative_path(project_path)
     abs_path = (storage_root / rel_path).resolve()
-    if storage_root not in abs_path.parents and abs_path != storage_root:
-        raise ValueError('projectPath must stay inside storage root')
+    projects_root = get_projects_root()
+    if abs_path == projects_root or projects_root not in abs_path.parents:
+        raise ValueError('projectPath must stay inside the managed projects directory')
     return abs_path
 
 
@@ -53,7 +62,7 @@ def normalize_project_relative_path(project_path):
     if project_path.startswith('/'):
         raise ValueError('projectPath must be storage-relative')
     normalized = Path(project_path)
-    if normalized.is_absolute() or '..' in normalized.parts:
+    if normalized.is_absolute() or '..' in normalized.parts or normalized.as_posix() == '.':
         raise ValueError('projectPath must stay inside storage root')
     return normalized.as_posix()
 
@@ -65,8 +74,10 @@ def normalize_project_file_path(file_path):
     if file_path.startswith('/'):
         raise ValueError('path must be project-relative')
     normalized = Path(file_path)
-    if normalized.is_absolute() or '..' in normalized.parts:
+    if normalized.is_absolute() or '..' in normalized.parts or normalized.as_posix() == '.':
         raise ValueError('path must stay inside the project')
+    if normalized.parts and normalized.parts[0] in RESERVED_PROJECT_PATHS:
+        raise ValueError('Internal project paths cannot be modified')
     return normalized.as_posix()
 
 
@@ -74,9 +85,24 @@ def resolve_project_file(project_root, file_path):
     project_root = Path(project_root).resolve()
     rel_path = normalize_project_file_path(file_path)
     abs_path = (project_root / rel_path).resolve()
-    if project_root not in abs_path.parents and abs_path != project_root:
+    if abs_path == project_root or project_root not in abs_path.parents:
         raise ValueError('path must stay inside the project')
     return abs_path
+
+
+@contextmanager
+def project_write_lock(project_root):
+    """Serialize project writes across Gunicorn workers and threads."""
+    project_root = Path(project_root).resolve()
+    git_dir = project_root / '.git'
+    if not git_dir.is_dir():
+        raise ValueError('Project repository is not initialized')
+    with (git_dir / 'md-review-write.lock').open('a+', encoding='utf-8') as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def ensure_project_repo(project_path):
@@ -85,6 +111,13 @@ def ensure_project_repo(project_path):
     git_dir = project_root / '.git'
     if not git_dir.exists():
         subprocess.run(['git', '-C', str(project_root), 'init'], check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    exclude_path = git_dir / 'info' / 'exclude'
+    exclude_path.parent.mkdir(parents=True, exist_ok=True)
+    existing = exclude_path.read_text(encoding='utf-8') if exclude_path.exists() else ''
+    if '.md-review/' not in {line.strip() for line in existing.splitlines()}:
+        separator = '' if not existing or existing.endswith('\n') else '\n'
+        with exclude_path.open('a', encoding='utf-8') as exclude_file:
+            exclude_file.write(f'{separator}.md-review/\n')
     return project_root
 
 
@@ -140,6 +173,8 @@ def rename_project_path(project_root, old_path, new_path):
     new_abs = resolve_project_file(project_root, new_path)
     if not old_abs.exists():
         raise FileNotFoundError(old_path)
+    if new_abs.exists():
+        raise FileExistsError(new_path)
     new_abs.parent.mkdir(parents=True, exist_ok=True)
     old_abs.rename(new_abs)
     return new_abs
@@ -218,15 +253,45 @@ def git_commit_paths(project_root, paths, message):
 
 
 def get_comments_root(project_root):
-    return (Path(project_root).resolve() / '.md-review' / 'comments').resolve()
+    project_root = Path(project_root).resolve()
+    comments_root = (project_root / '.md-review' / 'comments').resolve()
+    if comments_root == project_root or project_root not in comments_root.parents:
+        raise ValueError('Comment storage must stay inside the project')
+    return comments_root
+
+
+def normalize_project_commit(project_root, commit_sha):
+    commit_sha = str(commit_sha or '').strip()
+    if not COMMIT_SHA_RE.fullmatch(commit_sha):
+        raise ValueError('Invalid commitSha')
+    result = subprocess.run(
+        ['git', '-C', str(Path(project_root).resolve()), 'rev-parse', '--verify', f'{commit_sha}^{{commit}}'],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    canonical = result.stdout.strip().lower()
+    if result.returncode != 0 or not COMMIT_SHA_RE.fullmatch(canonical):
+        raise ValueError('commitSha does not identify a project commit')
+    return canonical
+
+
+def get_comment_file_store_dir(project_root, file_path):
+    comments_root = get_comments_root(project_root)
+    rel_path = normalize_project_file_path(file_path)
+    store_dir = (comments_root / rel_path).resolve()
+    if store_dir == comments_root or comments_root not in store_dir.parents:
+        raise ValueError('Comment path escapes comment storage')
+    return store_dir
 
 
 def get_comment_store_path(project_root, file_path, commit_sha):
-    rel_path = normalize_project_file_path(file_path)
-    commit_sha = (commit_sha or '').strip()
-    if not commit_sha:
-        raise ValueError('commitSha required')
-    return get_comments_root(project_root) / rel_path / f'{commit_sha}.json'
+    store_dir = get_comment_file_store_dir(project_root, file_path)
+    canonical_commit = normalize_project_commit(project_root, commit_sha)
+    store_path = (store_dir / f'{canonical_commit}.json').resolve()
+    if store_dir not in store_path.parents:
+        raise ValueError('Comment commit path escapes comment storage')
+    return store_path
 
 
 def _git_is_ancestor(project_root, ancestor_commit, descendant_commit):
@@ -243,35 +308,35 @@ def _git_is_ancestor(project_root, ancestor_commit, descendant_commit):
 
 
 def list_applicable_comment_store_commits(project_root, file_path, commit_sha):
-    rel_path = normalize_project_file_path(file_path)
-    commit_sha = (commit_sha or '').strip()
-    if not commit_sha:
-        raise ValueError('commitSha required')
-
-    store_dir = get_comments_root(project_root) / rel_path
+    canonical_commit = normalize_project_commit(project_root, commit_sha)
+    store_dir = get_comment_file_store_dir(project_root, file_path)
     if not store_dir.exists():
         return []
 
     matching = []
     for path in store_dir.glob('*.json'):
-        candidate_commit = path.stem.strip()
-        if candidate_commit == commit_sha or _git_is_ancestor(project_root, candidate_commit, commit_sha):
+        try:
+            candidate_commit = normalize_project_commit(project_root, path.stem)
+        except ValueError:
+            continue
+        if candidate_commit == canonical_commit or _git_is_ancestor(project_root, candidate_commit, canonical_commit):
             matching.append(candidate_commit)
     return matching
 
 
 def load_comment_store(project_root, file_path, commit_sha):
-    store_path = get_comment_store_path(project_root, file_path, commit_sha)
+    canonical_commit = normalize_project_commit(project_root, commit_sha)
+    store_path = get_comment_store_path(project_root, file_path, canonical_commit)
     if not store_path.exists():
         return {
             'filePath': normalize_project_file_path(file_path),
-            'commitSha': commit_sha,
+            'commitSha': canonical_commit,
             'threads': []
         }
     with store_path.open('r', encoding='utf-8') as handle:
         data = json.load(handle)
     data.setdefault('filePath', normalize_project_file_path(file_path))
-    data.setdefault('commitSha', commit_sha)
+    data.setdefault('commitSha', canonical_commit)
     data.setdefault('threads', [])
     return data
 
@@ -281,11 +346,12 @@ def load_applicable_comment_stores(project_root, file_path, commit_sha):
 
 
 def save_comment_store(project_root, file_path, commit_sha, payload):
-    store_path = get_comment_store_path(project_root, file_path, commit_sha)
+    canonical_commit = normalize_project_commit(project_root, commit_sha)
+    store_path = get_comment_store_path(project_root, file_path, canonical_commit)
     store_path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         'filePath': normalize_project_file_path(file_path),
-        'commitSha': commit_sha,
+        'commitSha': canonical_commit,
         'threads': payload.get('threads', [])
     }
     with tempfile.NamedTemporaryFile('w', delete=False, dir=store_path.parent, encoding='utf-8') as handle:
@@ -294,3 +360,32 @@ def save_comment_store(project_root, file_path, commit_sha, payload):
         tmp_name = handle.name
     os.replace(tmp_name, store_path)
     return store_path
+
+
+def rename_comment_store_path(project_root, old_path, new_path):
+    """Move comment history with a renamed file or directory."""
+    old_path = normalize_project_file_path(old_path)
+    new_path = normalize_project_file_path(new_path)
+    old_store = get_comment_file_store_dir(project_root, old_path)
+    new_store = get_comment_file_store_dir(project_root, new_path)
+    if not old_store.exists():
+        return False
+    if new_store.exists():
+        raise FileExistsError(f'Comment history already exists for {new_path}')
+
+    new_store.parent.mkdir(parents=True, exist_ok=True)
+    old_store.rename(new_store)
+    comments_root = get_comments_root(project_root)
+    for store_path in new_store.rglob('*.json'):
+        relative_file_path = store_path.parent.relative_to(comments_root).as_posix()
+        with store_path.open('r', encoding='utf-8') as handle:
+            payload = json.load(handle)
+        payload['filePath'] = relative_file_path
+        for thread in payload.get('threads', []):
+            thread_path = thread.get('filePath')
+            if thread_path == old_path:
+                thread['filePath'] = new_path
+            elif isinstance(thread_path, str) and thread_path.startswith(f'{old_path}/'):
+                thread['filePath'] = f'{new_path}{thread_path[len(old_path):]}'
+        save_comment_store(project_root, relative_file_path, store_path.stem, payload)
+    return True

@@ -12,6 +12,8 @@ from utils.repo_storage import (
     load_comment_store,
     list_applicable_comment_store_commits,
     normalize_project_file_path,
+    normalize_project_commit,
+    project_write_lock,
     read_project_file,
     resolve_project_root,
     save_comment_store,
@@ -60,6 +62,25 @@ def require_project_lock(project_id, user_id):
     return project, None
 
 
+def require_locked_project_write(f):
+    from functools import wraps
+
+    @wraps(f)
+    def decorated(project_id, *args, **kwargs):
+        uid = session['user_id']
+        project, error = require_project_lock(project_id, uid)
+        if error:
+            return error
+        project_root = resolve_project_root(project['project_path'])
+        with project_write_lock(project_root):
+            _, current_error = require_project_lock(project_id, uid)
+            if current_error:
+                return current_error
+            return f(project_id, *args, **kwargs)
+
+    return decorated
+
+
 def normalize_comment_context(data):
     if not data or not data.get('projectId'):
         return None, (jsonify({'error': 'projectId required'}), 400)
@@ -67,19 +88,36 @@ def normalize_comment_context(data):
         return None, (jsonify({'error': 'commitSha required'}), 400)
     if not data.get('filePath'):
         return None, (jsonify({'error': 'filePath required'}), 400)
-    try:
-        file_path = normalize_project_file_path(data['filePath'])
-    except ValueError as exc:
-        return None, (jsonify({'error': str(exc)}), 400)
     project = get_project_for_user(data['projectId'], session['user_id'])
     if not project:
         return None, (jsonify({'error': 'Not found'}), 404)
+    project_root = resolve_project_root(project['project_path'])
+    try:
+        file_path = normalize_project_file_path(data['filePath'])
+        commit_sha = normalize_project_commit(project_root, data['commitSha'])
+    except ValueError as exc:
+        return None, (jsonify({'error': str(exc)}), 400)
     return {
         'projectId': data['projectId'],
-        'projectRoot': resolve_project_root(project['project_path']),
-        'commitSha': data['commitSha'],
+        'projectRoot': project_root,
+        'commitSha': commit_sha,
         'filePath': file_path,
     }, None
+
+
+def require_locked_comment_write(f):
+    from functools import wraps
+
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        data = request.get_json(silent=True) or {}
+        context, error = normalize_comment_context(data)
+        if error:
+            return error
+        with project_write_lock(context['projectRoot']):
+            return f(*args, **kwargs)
+
+    return decorated
 
 
 def serialize_thread(thread):
@@ -118,7 +156,8 @@ def list_versions(project_id):
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
     rows = get_db().execute(
-        "SELECT fv.*, u.username AS author_name "
+        "SELECT fv.id, fv.project_id, fv.file_path, fv.version, fv.message, "
+        "fv.author_id, fv.created_at, u.username AS author_name "
         "FROM file_versions fv "
         "JOIN users u ON fv.author_id = u.id "
         "WHERE fv.project_id = ? AND fv.file_path = ? "
@@ -265,6 +304,7 @@ def apply_diff_chunk_route(project_id):
 
 @review_bp.route('/projects/<project_id>/files/versions/<version_id>/revert', methods=['POST'])
 @require_auth
+@require_locked_project_write
 def revert_version(project_id, version_id):
     uid = session['user_id']
     edit_error = require_project_edit(project_id, uid)
@@ -297,15 +337,14 @@ def revert_version(project_id, version_id):
     author = conn.execute("SELECT username FROM users WHERE id = ?", (uid,)).fetchone()
     author_name = author['username'] if author else uid
     conn.execute(
-        "INSERT INTO file_versions (id, project_id, file_path, version, content, diff, message, author_id, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO file_versions (id, project_id, file_path, version, content, message, author_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             str(uuid.uuid4()),
             project_id,
             version['file_path'],
             next_version,
             version['content'],
-            '[]',
             f"Reverted to v{version['version']} by {author_name}",
             uid,
             now,
@@ -327,6 +366,7 @@ def revert_version(project_id, version_id):
 
 @review_bp.route('/comments/threads', methods=['POST'])
 @require_auth
+@require_locked_comment_write
 def create_thread():
     uid = session['user_id']
     data = request.get_json()
@@ -386,6 +426,7 @@ def create_thread():
 
 @review_bp.route('/comment-lines', methods=['POST'])
 @require_auth
+@require_locked_comment_write
 def add_comment():
     uid = session['user_id']
     data = request.get_json()
@@ -426,7 +467,10 @@ def list_threads(project_id):
         return jsonify({'error': str(exc)}), 400
     project = get_project_for_user(project_id, session['user_id'])
     project_root = resolve_project_root(project['project_path'])
-    stores = load_applicable_comment_stores(project_root, file_path, commit_sha)
+    try:
+        stores = load_applicable_comment_stores(project_root, file_path, commit_sha)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
     merged_threads = []
     for store in stores:
         merged_threads.extend(store.get('threads', []))
@@ -440,6 +484,7 @@ def list_threads(project_id):
 
 @review_bp.route('/comments/threads/<thread_id>/resolve', methods=['POST'])
 @require_auth
+@require_locked_comment_write
 def toggle_resolve(thread_id):
     uid = session['user_id']
     data = request.get_json() or {}
@@ -467,6 +512,7 @@ def toggle_resolve(thread_id):
 
 @review_bp.route('/comments/threads/<thread_id>', methods=['DELETE'])
 @require_auth
+@require_locked_comment_write
 def delete_thread(thread_id):
     uid = session['user_id']
     data = request.get_json() or {}

@@ -1,4 +1,3 @@
-import json
 import os
 import shutil
 import tempfile
@@ -9,7 +8,6 @@ from urllib.parse import quote
 from flask import Blueprint, after_this_request, current_app, jsonify, request, send_file, session
 
 from models import get_db, get_project_for_user
-from utils.diff import compute_diff
 from utils.repo_storage import (
     build_project_archive,
     default_project_path,
@@ -17,12 +15,15 @@ from utils.repo_storage import (
     delete_project_root,
     ensure_project_file,
     ensure_project_repo,
+    get_comment_file_store_dir,
     get_project_head_commit,
     git_commit_paths,
     list_project_tree,
     normalize_project_file_path,
+    project_write_lock,
     read_project_file,
     rename_project_path,
+    rename_comment_store_path,
     resolve_project_file,
     resolve_project_root,
     sanitize_asset_filename,
@@ -43,6 +44,32 @@ def require_auth(f):
         if 'user_id' not in session:
             return jsonify({'error': 'Not authenticated'}), 401
         return f(*args, **kwargs)
+
+    return decorated
+
+
+def require_locked_project_write(f):
+    from functools import wraps
+
+    @wraps(f)
+    def decorated(project_id, *args, **kwargs):
+        uid = session['user_id']
+        project, error = get_accessible_project_or_404(project_id, uid)
+        if error:
+            return error
+        permission_error = require_edit_access(project)
+        if permission_error:
+            return permission_error
+        lock_error = require_project_lock(project, uid)
+        if lock_error:
+            return lock_error
+        project_root = ensure_project_repo(project['project_path'])
+        with project_write_lock(project_root):
+            current_project = get_project_for_user(project_id, uid)
+            current_lock_error = require_project_lock(current_project, uid)
+            if current_lock_error:
+                return current_lock_error
+            return f(project_id, *args, **kwargs)
 
     return decorated
 
@@ -91,28 +118,35 @@ def require_edit_access(project):
     return None
 
 
+def require_project_lock(project, user_id):
+    if not project:
+        return jsonify({'error': 'Not found'}), 404
+    if project.get('lock_owner_id') != user_id:
+        return jsonify({'error': 'Acquire the project lock before modifying it'}), 423
+    return None
+
+
 def require_owner_access(project):
     if not project['is_owner']:
         return jsonify({'error': 'Forbidden'}), 403
     return None
 
 
-def insert_file_version(project_id, file_path, content, diff_rows, message, author_id, now):
+def insert_file_version(project_id, file_path, content, message, author_id, now):
     conn = get_db()
     next_version = conn.execute(
         "SELECT COALESCE(MAX(version), 0) + 1 FROM file_versions WHERE project_id = ? AND file_path = ?",
         (project_id, file_path)
     ).fetchone()[0]
     conn.execute(
-        "INSERT INTO file_versions (id, project_id, file_path, version, content, diff, message, author_id, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO file_versions (id, project_id, file_path, version, content, message, author_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         (
             str(uuid.uuid4()),
             project_id,
             file_path,
             next_version,
             content,
-            json.dumps(diff_rows),
             message,
             author_id,
             now,
@@ -185,11 +219,13 @@ def create_project():
     title = (data.get('title') or '').strip()
     if not title:
         return jsonify({'error': 'title required'}), 400
+    if data.get('projectPath') is not None:
+        return jsonify({'error': 'projectPath is managed by the server'}), 400
 
     project_id = str(uuid.uuid4())
     uid = session['user_id']
     now = datetime.now(timezone.utc).isoformat()
-    project_path = data.get('projectPath') or default_project_path(project_id, title)
+    project_path = default_project_path(project_id, title)
     ensure_project_repo(project_path)
 
     conn = get_db()
@@ -268,6 +304,7 @@ def list_project_files(project_id):
 
 @project_bp.route('/projects/<project_id>/files', methods=['POST'])
 @require_auth
+@require_locked_project_write
 def create_project_file(project_id):
     uid = session['user_id']
     row, error = get_accessible_project_or_404(project_id, uid)
@@ -295,7 +332,7 @@ def create_project_file(project_id):
     now = datetime.now(timezone.utc).isoformat()
     ensure_project_file(project_root, file_path, content)
     head = git_commit_paths(project_root, [file_path], f'Save {file_path}')
-    insert_file_version(project_id, file_path, content, compute_diff('', content), 'Created file', uid, now)
+    insert_file_version(project_id, file_path, content, 'Created file', uid, now)
     get_db().execute(
         "UPDATE projects SET updated_by = ?, updated_at = ? WHERE id = ?",
         (uid, now, project_id)
@@ -310,6 +347,7 @@ def create_project_file(project_id):
 
 @project_bp.route('/projects/<project_id>/files', methods=['DELETE'])
 @require_auth
+@require_locked_project_write
 def delete_file(project_id):
     uid = session['user_id']
     row, error = get_accessible_project_or_404(project_id, uid)
@@ -369,6 +407,7 @@ def get_project_file_content(project_id):
 
 @project_bp.route('/projects/<project_id>/files/content', methods=['PUT'])
 @require_auth
+@require_locked_project_write
 def save_project_file_content(project_id):
     uid = session['user_id']
     row, error = get_accessible_project_or_404(project_id, uid)
@@ -389,16 +428,22 @@ def save_project_file_content(project_id):
 
     project_root = ensure_project_repo(row['project_path'])
     abs_path = resolve_project_file(project_root, file_path)
+    base_commit = str(data.get('baseCommitSha') or '').strip()
+    if not base_commit:
+        return jsonify({'error': 'baseCommitSha required'}), 400
+    current_head = get_project_head_commit(project_root)
+    if base_commit != current_head:
+        return jsonify({'error': 'File changed since it was loaded', 'currentCommitSha': current_head}), 409
+
     if not abs_path.exists():
         return jsonify({'error': 'Not found'}), 404
 
     old_content = read_project_file(project_root, file_path, '')
     content = data.get('content', old_content)
-    diff_rows = compute_diff(old_content, content)
     now = datetime.now(timezone.utc).isoformat()
     write_project_file(project_root, file_path, content)
     head = git_commit_paths(project_root, [file_path], f'Save {file_path}')
-    insert_file_version(project_id, file_path, content, diff_rows, 'Saved file', uid, now)
+    insert_file_version(project_id, file_path, content, 'Saved file', uid, now)
     get_db().execute(
         "UPDATE projects SET updated_by = ?, updated_at = ? WHERE id = ?",
         (uid, now, project_id)
@@ -414,6 +459,7 @@ def save_project_file_content(project_id):
 
 @project_bp.route('/projects/<project_id>/assets', methods=['POST'])
 @require_auth
+@require_locked_project_write
 def upload_project_asset(project_id):
     uid = session['user_id']
     row, error = get_accessible_project_or_404(project_id, uid)
@@ -475,6 +521,7 @@ def get_project_asset(project_id, file_path):
 
 @project_bp.route('/projects/<project_id>/rename', methods=['POST'])
 @require_auth
+@require_locked_project_write
 def rename_file(project_id):
     uid = session['user_id']
     row, error = get_accessible_project_or_404(project_id, uid)
@@ -492,10 +539,22 @@ def rename_file(project_id):
         return jsonify({'error': str(exc)}), 400
 
     project_root = ensure_project_repo(row['project_path'])
+    old_comment_store = get_comment_file_store_dir(project_root, old_path)
+    new_comment_store = get_comment_file_store_dir(project_root, new_path)
+    if old_comment_store.exists() and new_comment_store.exists():
+        return jsonify({'error': 'Comment history already exists at destination'}), 409
     try:
         rename_project_path(project_root, old_path, new_path)
     except FileNotFoundError:
         return jsonify({'error': 'Not found'}), 404
+    except FileExistsError:
+        return jsonify({'error': 'Destination already exists'}), 409
+
+    try:
+        rename_comment_store_path(project_root, old_path, new_path)
+    except Exception:
+        rename_project_path(project_root, new_path, old_path)
+        raise
 
     replace_version_prefix(project_id, old_path, new_path)
     now = datetime.now(timezone.utc).isoformat()
@@ -518,11 +577,16 @@ def lock_project(project_id):
     permission_error = require_edit_access(row)
     if permission_error:
         return permission_error
-    if row['lock_owner_id'] and row['lock_owner_id'] != uid:
-        return jsonify({'error': 'Project is locked by another user'}), 423
     now = datetime.now(timezone.utc).isoformat()
-    get_db().execute("UPDATE projects SET lock_owner_id = ?, locked_at = ? WHERE id = ?", (uid, now, project_id))
-    get_db().commit()
+    conn = get_db()
+    cursor = conn.execute(
+        "UPDATE projects SET lock_owner_id = ?, locked_at = ? WHERE id = ? AND (lock_owner_id IS NULL OR lock_owner_id = ?)",
+        (uid, now, project_id, uid),
+    )
+    if cursor.rowcount != 1:
+        conn.rollback()
+        return jsonify({'error': 'Project is locked by another user'}), 423
+    conn.commit()
     return jsonify(project_to_api(get_project_for_user(project_id, uid)))
 
 
@@ -536,10 +600,15 @@ def unlock_project(project_id):
     permission_error = require_edit_access(row)
     if permission_error:
         return permission_error
-    if row['lock_owner_id'] and row['lock_owner_id'] != uid:
+    conn = get_db()
+    cursor = conn.execute(
+        "UPDATE projects SET lock_owner_id = NULL, locked_at = NULL WHERE id = ? AND (lock_owner_id = ? OR lock_owner_id IS NULL)",
+        (project_id, uid),
+    )
+    if cursor.rowcount != 1:
+        conn.rollback()
         return jsonify({'error': 'You do not own this lock'}), 403
-    get_db().execute("UPDATE projects SET lock_owner_id = NULL, locked_at = NULL WHERE id = ?", (project_id,))
-    get_db().commit()
+    conn.commit()
     return jsonify({'ok': True})
 
 

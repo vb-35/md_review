@@ -809,7 +809,8 @@ function wireEvents() {
     if (!canEditCurrentProject()) return alert('Edit access required.');
     if (!holdsCurrentLock()) return alert('Take the project lock first.');
     const dirPath = window.prompt('Upload into folder (blank for project root)', '') || '';
-    await uploadProjectAsset(state.currentProject.id, file, dirPath.trim());
+    const uploaded = await uploadProjectAsset(state.currentProject.id, file, dirPath.trim());
+    if (state.currentFile) state.currentFile.currentCommitSha = uploaded.currentCommitSha;
     await window.App.projects.refreshProjectState();
   });
 
@@ -819,7 +820,8 @@ function wireEvents() {
     if (!state.currentProject || !state.currentFile) return;
     state.currentFile = await api('PUT', `/projects/${state.currentProject.id}/files/content`, {
       path: state.currentFile.filePath,
-      content: window.App.editor.getValue()
+      content: window.App.editor.getValue(),
+      baseCommitSha: state.currentFile.currentCommitSha
     });
     state.editing = false;
     await window.App.projects.refreshProjectState(state.currentFile.filePath);
@@ -846,6 +848,8 @@ function wireEvents() {
       ? state.currentFile.filePath.split('/').slice(0, -1).join('/')
       : '';
     const uploaded = await uploadProjectAsset(state.currentProject.id, file, currentDir);
+    state.currentFile.currentCommitSha = uploaded.currentCommitSha;
+    state.currentProject.currentCommitSha = uploaded.currentCommitSha;
     insertAtCursor(`![${uploaded.filename}](${uploaded.url})`);
     window.App.preview.updatePreview();
   });
