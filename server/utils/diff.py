@@ -160,6 +160,42 @@ def _build_single_line_row(line_type, line_text, line_number_key, line_number, r
     })
 
 
+def _select_monotonic_matches(smaller, larger):
+    """Map every line in smaller to the most similar ordered line in larger."""
+    small_count = len(smaller)
+    large_count = len(larger)
+    impossible = float('-inf')
+    scores = [[impossible] * (large_count + 1) for _ in range(small_count + 1)]
+    take = [[False] * (large_count + 1) for _ in range(small_count + 1)]
+    for large_index in range(large_count + 1):
+        scores[0][large_index] = 0.0
+
+    for small_index in range(1, small_count + 1):
+        for large_index in range(1, large_count + 1):
+            skip_score = scores[small_index][large_index - 1]
+            match_score = scores[small_index - 1][large_index - 1]
+            if match_score != impossible:
+                match_score += difflib.SequenceMatcher(
+                    None,
+                    _tokenize(smaller[small_index - 1]),
+                    _tokenize(larger[large_index - 1]),
+                ).ratio()
+            if match_score >= skip_score:
+                scores[small_index][large_index] = match_score
+                take[small_index][large_index] = True
+            else:
+                scores[small_index][large_index] = skip_score
+
+    matches = {}
+    small_index, large_index = small_count, large_count
+    while small_index:
+        if take[small_index][large_index]:
+            matches[small_index - 1] = large_index - 1
+            small_index -= 1
+        large_index -= 1
+    return matches
+
+
 def compute_diff(base_text, candidate_text):
     base_lines = base_text.splitlines(keepends=True)
     cand_lines = candidate_text.splitlines(keepends=True)
@@ -193,25 +229,56 @@ def compute_diff(base_text, candidate_text):
         if tag == 'replace':
             removed_lines = [_strip_line_endings(line) for line in base_lines[i1:i2]]
             added_lines = [_strip_line_endings(line) for line in cand_lines[j1:j2]]
-            paired_count = min(len(removed_lines), len(added_lines))
+            if len(removed_lines) == len(added_lines):
+                operations = [
+                    ('pair', offset, offset)
+                    for offset in range(len(removed_lines))
+                ]
+            elif len(removed_lines) < len(added_lines):
+                removed_to_added = _select_monotonic_matches(removed_lines, added_lines)
+                added_to_removed = {
+                    added_index: removed_index
+                    for removed_index, added_index in removed_to_added.items()
+                }
+                operations = [
+                    ('pair', added_to_removed[added_index], added_index)
+                    if added_index in added_to_removed else ('add', None, added_index)
+                    for added_index in range(len(added_lines))
+                ]
+            else:
+                added_to_removed = _select_monotonic_matches(added_lines, removed_lines)
+                removed_to_added = {
+                    removed_index: added_index
+                    for added_index, removed_index in added_to_removed.items()
+                }
+                operations = [
+                    ('pair', removed_index, removed_to_added[removed_index])
+                    if removed_index in removed_to_added else ('remove', removed_index, None)
+                    for removed_index in range(len(removed_lines))
+                ]
 
-            for offset in range(paired_count):
-                diff_lines.extend(_build_replace_rows(
-                    removed_lines[offset],
-                    added_lines[offset],
-                    i1 + offset + 1,
-                    j1 + offset + 1,
-                    row_index,
-                ))
-                row_index += 2
-
-            for offset, removed_line in enumerate(removed_lines[paired_count:], start=paired_count):
-                diff_lines.append(_build_single_line_row('removed', removed_line, 'baseLine', i1 + offset + 1, row_index))
-                row_index += 1
-
-            for offset, added_line in enumerate(added_lines[paired_count:], start=paired_count):
-                diff_lines.append(_build_single_line_row('added', added_line, 'candLine', j1 + offset + 1, row_index))
-                row_index += 1
+            for operation, removed_index, added_index in operations:
+                if operation == 'pair':
+                    diff_lines.extend(_build_replace_rows(
+                        removed_lines[removed_index],
+                        added_lines[added_index],
+                        i1 + removed_index + 1,
+                        j1 + added_index + 1,
+                        row_index,
+                    ))
+                    row_index += 2
+                elif operation == 'remove':
+                    diff_lines.append(_build_single_line_row(
+                        'removed', removed_lines[removed_index], 'baseLine',
+                        i1 + removed_index + 1, row_index,
+                    ))
+                    row_index += 1
+                else:
+                    diff_lines.append(_build_single_line_row(
+                        'added', added_lines[added_index], 'candLine',
+                        j1 + added_index + 1, row_index,
+                    ))
+                    row_index += 1
             continue
 
         if tag == 'delete':

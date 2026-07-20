@@ -444,6 +444,9 @@
       && active.proposalId === nextProposalId
       && active.versionAId === state.selectedBaseId
       && active.versionBId === state.selectedHeadId;
+    let comparisonBaselineContent = sameWorkingReview
+      ? state.comparedDiffBaselineContent
+      : null;
     if (active && active.needsSave && !sameWorkingReview) {
       if (!window.confirm('Discard the unsaved reviewed changes and start another comparison?')) return;
       state.suspendEditorChangeTracking = true;
@@ -454,13 +457,16 @@
       App.preview.updatePreview();
       updateHeader();
     }
+    if (comparisonBaselineContent === null) {
+      comparisonBaselineContent = App.editor.getValue();
+    }
     const result = await App.api('POST', `/projects/${state.currentProject.id}/files/compare`, {
       path: state.currentFile.filePath,
       versionA: state.selectedBaseId,
       versionB: state.selectedHeadId
     });
     state.comparedDiff = result;
-    state.comparedDiffBaselineContent = App.editor.getValue();
+    state.comparedDiffBaselineContent = comparisonBaselineContent;
     state.comparedDiffDecisions = result.proposalDecisions || {};
     state.lastAppliedDiffAction = null;
     renderDiff(result.diff);

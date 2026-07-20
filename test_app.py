@@ -91,7 +91,7 @@ def test_index_exposes_repo_actions():
     assert 'proposal-review' in html
     assert 'js/app.js?v=20260720c' in html
     assert 'js/proposals.js?v=20260720c' in html
-    assert 'js/projects.js?v=20260720e' in html
+    assert 'js/projects.js?v=20260720f' in html
     print("PASS: index_exposes_repo_actions")
 
 
@@ -207,6 +207,25 @@ def test_apply_diff_decisions_allows_flip_and_old_version_fallback():
     print("PASS: apply_diff_decisions_allows_flip_and_old_version_fallback")
 
 
+def test_diff_aligns_inserted_blank_before_replacement():
+    base = "# Method\n## Overview\nOld paragraph\n\n## Next\n"
+    candidate = "# Method\n\n## Overview\n\nNew paragraph\n\n## Next\n"
+    diff = compute_diff(base, candidate)
+    added = next(row for row in diff if row['type'] == 'added' and row['line'] == 'New paragraph')
+    removed = next(row for row in diff if row['type'] == 'removed' and row['line'] == 'Old paragraph')
+
+    assert added['chunks'][0]['kind'] == 'replace'
+    assert added['pairRowId'] == removed['rowId']
+    accepted = apply_diff_decisions(base, candidate, base, [{
+        'rowId': added['rowId'],
+        'chunkId': added['chunks'][0]['chunkId'],
+        'decision': 'accept',
+    }])
+    assert 'Old paragraph' not in accepted['content']
+    assert accepted['content'].count('New paragraph') == 1
+    print("PASS: diff_aligns_inserted_blank_before_replacement")
+
+
 if __name__ == '__main__':
     test_init_db()
     test_ensure_user()
@@ -220,4 +239,5 @@ if __name__ == '__main__':
     test_apply_diff_chunk_replace_and_conflict()
     test_apply_diff_chunk_line_add_remove()
     test_apply_diff_decisions_allows_flip_and_old_version_fallback()
+    test_diff_aligns_inserted_blank_before_replacement()
     print("ALL PASS")
