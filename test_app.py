@@ -14,6 +14,7 @@ Config.REPO_ROOT = tempfile.mkdtemp(prefix='md_review_storage_')
 Config.SESSION_FILE_DIR = tempfile.mkdtemp(prefix='md_review_session_')
 from models import get_db, init_db, ensure_user
 from run import create_app
+from routes.proposals import annotate_diff_decisions
 from utils.diff import apply_diff_chunk, apply_diff_decisions, compute_diff
 from utils.renderer import markdown_to_html
 
@@ -81,7 +82,7 @@ def test_index_exposes_repo_actions():
     assert 'proposal-review' in html
     assert 'js/app.js?v=20260720b' in html
     assert 'js/proposals.js?v=20260720b' in html
-    assert 'js/projects.js?v=20260720b' in html
+    assert 'js/projects.js?v=20260720d' in html
     print("PASS: index_exposes_repo_actions")
 
 
@@ -128,6 +129,20 @@ def test_diff_and_renderer():
     assert '<h1>Title</h1>' in html
     assert '<ul>' in html
     print("PASS: diff_and_renderer")
+
+
+def test_proposal_decision_annotates_rendered_diff():
+    diff = compute_diff("alpha beta\n", "alpha gamma\n")
+    added = next(row for row in diff if row['type'] == 'added')
+    chunk = added['chunks'][0]
+    item_id = f"{added['rowId']}::{chunk['chunkId']}"
+    items = annotate_diff_decisions(diff, 'paper.md', {
+        ('diff', 'paper.md', item_id): {'decision': 'accept'},
+    })
+
+    assert next(item for item in items if item['itemId'] == item_id)['decision'] == 'accept'
+    assert chunk['decision'] == 'accept'
+    print("PASS: proposal_decision_annotates_rendered_diff")
 
 
 def test_apply_diff_chunk_replace_and_conflict():
@@ -191,6 +206,7 @@ if __name__ == '__main__':
     test_find_replace_js_helpers()
     test_comments_js_helpers()
     test_diff_and_renderer()
+    test_proposal_decision_annotates_rendered_diff()
     test_apply_diff_chunk_replace_and_conflict()
     test_apply_diff_chunk_line_add_remove()
     test_apply_diff_decisions_allows_flip_and_old_version_fallback()

@@ -155,6 +155,22 @@ def actionable_chunks(diff_rows):
     return items
 
 
+def annotate_diff_decisions(diff_rows, file_path, decisions):
+    items = actionable_chunks(diff_rows)
+    rendered_chunks = {
+        chunk['itemId']: chunk
+        for row in diff_rows
+        for chunk in row.get('chunks', [])
+        if chunk.get('itemId')
+    }
+    for item in items:
+        saved = decisions.get(('diff', file_path, item['itemId']))
+        decision = saved['decision'] if saved else None
+        item['decision'] = decision
+        rendered_chunks[item['itemId']]['decision'] = decision
+    return items
+
+
 def load_proposal_files(proposal_id):
     return [
         dict(row) for row in get_db().execute(
@@ -236,10 +252,7 @@ def proposal_detail(row):
     files = []
     for item in load_proposal_files(row['id']):
         diff = compute_diff(item['base_content'], item['proposed_content'])
-        chunks = actionable_chunks(diff)
-        for chunk in chunks:
-            saved = decisions.get(('diff', item['file_path'], chunk['itemId']))
-            chunk['decision'] = saved['decision'] if saved else None
+        chunks = annotate_diff_decisions(diff, item['file_path'], decisions)
         files.append({
             'filePath': item['file_path'],
             'diff': diff,

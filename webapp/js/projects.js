@@ -294,21 +294,57 @@
     return renderChunkActions(row, chunk);
   }
 
+  function allDiffChunkDecisions(decision, rowId = '') {
+    if (!state.comparedDiff) return [];
+    const decisions = new Map();
+    state.comparedDiff.diff.forEach((row) => {
+      if (rowId && row.rowId !== rowId) return;
+      (row.chunks || []).forEach((chunk) => {
+        if (!shouldRenderChunkActions(row, chunk)) return;
+        decisions.set(decisionKey(row.rowId, chunk.chunkId), {
+          rowId: row.rowId,
+          chunkId: chunk.chunkId,
+          decision,
+        });
+      });
+    });
+    return [...decisions.values()];
+  }
+
+  function renderBlockAcceptAll(row) {
+    const items = allDiffChunkDecisions('accept', row.rowId);
+    if (items.length < 2) return '';
+    const allAccepted = items.every((item) => (
+      currentChunkDecision(item.rowId, item.chunkId) === 'accept'
+    ));
+    const disabled = canApplyDiffChunks() ? '' : ' disabled';
+    return `<span class="diff-chunk-actions">
+      <button type="button" class="diff-action accept${allAccepted ? ' active' : ''}"
+        data-accept-all-row-id="${esc(row.rowId)}" aria-pressed="${allAccepted ? 'true' : 'false'}"${disabled}>Accept line</button>
+    </span>`;
+  }
+
+
   function renderDiff(diff) {
     $('#diff-view').innerHTML = diff.map((row) => {
       const prefix = row.type === 'added' ? '+' : row.type === 'removed' ? '-' : ' ';
       const lineActions = renderRowLineActions(row);
+      const blockActions = renderBlockAcceptAll(row);
       const baseLine = row.baseLine ? `B${row.baseLine}` : '';
       const candLine = row.candLine ? `H${row.candLine}` : '';
       const lineMeta = [baseLine, candLine].filter(Boolean).join(' ');
       return `<div class="diff-line ${row.type}" data-prefix="${prefix}">
         <span class="diff-line-body">${renderRowText(row)}</span>
         ${lineActions}
+        ${blockActions}
         ${lineMeta ? `<span class="diff-line-meta">${esc(lineMeta)}</span>` : ''}
       </div>`;
     }).join('');
-    $('#diff-view').querySelectorAll('.diff-action').forEach((button) => {
+    $('#diff-view').querySelectorAll('.diff-action[data-action]').forEach((button) => {
       button.addEventListener('click', () => applyDiffDecision(button.dataset.rowId, button.dataset.chunkId, button.dataset.action));
+    });
+    $('#diff-view').querySelectorAll('[data-accept-all-row-id]').forEach((button) => {
+      button.addEventListener('click', () => acceptAllDiffChunks(button.dataset.acceptAllRowId));
     });
   }
 
@@ -437,6 +473,77 @@
 
     state.comparedDiffDecisions = nextDecisions;
     state.lastAppliedDiffAction = { rowId, chunkId, decision };
+    state.comparedDiff = {
+      ...state.comparedDiff,
+      diff: result.diff || state.comparedDiff.diff,
+    };
+    App.editor.setValue(result.content);
+    state.editing = true;
+    App.preview.updatePreview();
+    updateHeader();
+    renderDiff(state.comparedDiff.diff);
+  }
+
+  async function acceptAllDiffChunks(rowId) {
+    if (!state.currentProject || !state.currentFile || !state.comparedDiff) return;
+    if (!canEditCurrentProject()) {
+      alert('Edit access required.');
+      return;
+    }
+
+    const items = allDiffChunkDecisions('accept', rowId);
+    if (!items.length) return;
+    const nextDecisions = { ...state.comparedDiffDecisions };
+    items.forEach((item) => {
+      nextDecisions[decisionKey(item.rowId, item.chunkId)] = 'accept';
+    });
+
+    if (state.comparedDiff.proposalId) {
+      if (!state.comparedDiff.reviewerCanDecide) {
+        alert('Select the proposal base and ensure you have edit access.');
+        return;
+      }
+      const result = await App.api(
+        'PUT',
+        `/projects/${state.currentProject.id}/proposals/${state.comparedDiff.proposalId}/decisions`,
+        { items: items.map((item) => ({
+          kind: 'diff',
+          filePath: state.currentFile.filePath,
+          itemId: decisionKey(item.rowId, item.chunkId),
+          decision: item.decision,
+        })) }
+      );
+      state.comparedDiffDecisions = nextDecisions;
+      state.lastAppliedDiffAction = { decision: 'accept-all' };
+      if (state.currentProposal && state.currentProposal.id === result.id) {
+        state.currentProposal = result;
+      }
+      renderDiff(state.comparedDiff.diff);
+      return;
+    }
+
+    if (!holdsCurrentLock()) {
+      alert('Take the project lock first.');
+      return;
+    }
+    const first = items[0];
+    const payloadDecisions = Object.entries(nextDecisions).map(([key, value]) => {
+      const [rowId, chunkId] = key.split('::');
+      return { rowId, chunkId, decision: value };
+    });
+    const result = await App.api('POST', `/projects/${state.currentProject.id}/files/apply-diff-chunk`, {
+      path: state.currentFile.filePath,
+      versionA: state.comparedDiff.versionAId,
+      versionB: state.comparedDiff.versionBId,
+      currentContent: state.comparedDiffBaselineContent,
+      rowId: first.rowId,
+      chunkId: first.chunkId,
+      decision: first.decision,
+      decisions: payloadDecisions,
+    });
+
+    state.comparedDiffDecisions = nextDecisions;
+    state.lastAppliedDiffAction = { decision: 'accept-all' };
     state.comparedDiff = {
       ...state.comparedDiff,
       diff: result.diff || state.comparedDiff.diff,
