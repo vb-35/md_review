@@ -11,6 +11,7 @@ from models import (
     acquire_project_lock,
     get_db,
     get_project_for_user,
+    project_lock_is_expired,
     refresh_project_lock,
     release_project_lock,
 )
@@ -91,6 +92,14 @@ def require_markdown_path(file_path):
 
 
 def project_to_api(project):
+    project = dict(project)
+    if project_lock_is_expired(project):
+        project.update({
+            'lock_owner_id': None,
+            'lock_owner_username': None,
+            'locked_at': None,
+            'lock_expires_at': None,
+        })
     project_root = ensure_project_repo(project['project_path'])
     return {
         'id': project['id'],

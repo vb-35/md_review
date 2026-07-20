@@ -87,7 +87,7 @@ Set up a project once:
 2. In the browser, open the project as its owner and share it with `codex` as an editor.
 3. Ask Codex to read the project, its version history, and open comment threads, then submit a revision proposal.
 4. Open an affected Markdown file and select **Review**. The proposal appears in **Version History** as `Proposed · codex`; diff it against the selected published base and accept or refuse its chunks. These choices review the proposal without changing the editor or live file.
-5. Open **Revision proposals** on the project dashboard to review any comment actions and the grouped proposal status, then publish the accepted items. The app creates one Git commit and records new file versions under the Codex author, with the human reviewer recorded on the proposal.
+5. Open **Revision proposals** on the project dashboard to review any comment actions and the grouped proposal status, then publish the accepted items. The app creates one Git commit and records new file versions under the proposal author, with the publishing editor recorded on the proposal. Proposal authors may review and publish their own proposals.
 
 A proposal never changes the live project. The proposal author or project owner can permanently delete any unpublished proposal; published proposals remain as audit history. A proposal becomes stale if the project commit or a referenced comment thread changes, in which case Codex must generate a new proposal from the current state. Project locks are five-minute leases; the browser refreshes a held editing lease every minute, while Codex and proposal publication release their temporary leases immediately.
 

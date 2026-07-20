@@ -491,8 +491,6 @@ def save_proposal_decisions(project_id, proposal_id):
     row = refresh_stale_status(row, resolve_project_root(project['project_path']))
     if row['status'] != 'pending':
         return jsonify({'error': f"Proposal is {row['status']}", 'code': row['status']}), 409
-    if row['author_id'] == uid:
-        return jsonify({'error': 'Proposal authors cannot review their own proposal'}), 403
     data = request.get_json() or {}
     items = data.get('items')
     if not isinstance(items, list) or not items:
@@ -575,8 +573,6 @@ def publish_proposal(project_id, proposal_id):
     row = proposal_row(proposal_id, project_id)
     if not row:
         return jsonify({'error': 'Not found'}), 404
-    if row['author_id'] == uid:
-        return jsonify({'error': 'Proposal authors cannot publish their own proposal'}), 403
     if row['status'] != 'pending':
         return jsonify({'error': f"Proposal is {row['status']}", 'code': row['status']}), 409
 
@@ -709,8 +705,6 @@ def reject_proposal(project_id, proposal_id):
     row = proposal_row(proposal_id, project_id)
     if not row:
         return jsonify({'error': 'Not found'}), 404
-    if row['author_id'] == uid:
-        return jsonify({'error': 'Proposal authors cannot reject their own proposal'}), 403
     if row['status'] != 'pending':
         return jsonify({'error': f"Proposal is {row['status']}", 'code': row['status']}), 409
     now = datetime.now(timezone.utc).isoformat()

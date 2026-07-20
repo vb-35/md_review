@@ -512,8 +512,14 @@ function canManageShares() {
   return !!state.currentProject && state.currentProject.isOwner;
 }
 
+function hasActiveProjectLock(project = state.currentProject) {
+  if (!project || !project.lockOwnerId || !project.lockExpiresAt) return false;
+  const expiresAt = Date.parse(project.lockExpiresAt);
+  return Number.isFinite(expiresAt) && expiresAt > Date.now();
+}
+
 function holdsCurrentLock() {
-  return !!state.currentProject && !!state.currentUser && state.currentProject.lockOwnerId === state.currentUser.id;
+  return hasActiveProjectLock() && !!state.currentUser && state.currentProject.lockOwnerId === state.currentUser.id;
 }
 
 function currentCommentContext() {
@@ -615,7 +621,7 @@ function updateHeader() {
     : state.currentProject.title;
   roleBadge.textContent = capitalize(state.currentProject.accessRole);
   roleBadge.classList.remove('hidden');
-  if (state.currentProject.lockOwnerId) {
+  if (hasActiveProjectLock()) {
     lockBadge.textContent = holdsCurrentLock()
       ? 'Locked by you'
       : `Locked by ${state.currentProject.lockOwnerUsername || 'another user'}`;
@@ -632,7 +638,7 @@ function updateHeader() {
 
 function updateEditorPermissions() {
   const canEdit = canEditCurrentProject();
-  const lockDisabled = !state.currentProject || !canEdit || (!!state.currentProject.lockOwnerId && !holdsCurrentLock());
+  const lockDisabled = !state.currentProject || !canEdit || (hasActiveProjectLock() && !holdsCurrentLock());
   const saveEnabled = !!state.currentFile && canEdit && holdsCurrentLock() && state.editing;
   $('#btn-save').disabled = !saveEnabled;
   $('#btn-lock').disabled = lockDisabled;
@@ -644,7 +650,7 @@ function updateEditorPermissions() {
     $('#btn-lock').textContent = 'Lock';
   } else if (holdsCurrentLock()) {
     $('#btn-lock').textContent = 'Unlock';
-  } else if (state.currentProject.lockOwnerId) {
+  } else if (hasActiveProjectLock()) {
     $('#btn-lock').textContent = 'Locked';
   } else {
     $('#btn-lock').textContent = 'Lock';
@@ -742,6 +748,7 @@ window.App = {
     esc,
     formatDate,
     getStoredIdentifier,
+    hasActiveProjectLock,
     holdsCurrentLock,
     isMobileSidePanelLayout,
     insertAtCursor,

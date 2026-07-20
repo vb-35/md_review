@@ -364,7 +364,6 @@ def compare_versions(project_id):
         'proposalBaseMatches': proposal_base_matches if proposal else None,
         'reviewerCanDecide': bool(
             proposal_base_matches
-            and proposal['author_id'] != uid
             and user_can_edit_project(project_id, uid)
         ),
     })

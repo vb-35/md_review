@@ -246,6 +246,14 @@ try:
     assert comparison['proposalBaseMatches'] is True
     assert comparison['proposalDecisions'] == {}
 
+    response = codex.post(f'/api/projects/{project_id}/files/compare', json={
+        'path': 'docs/one.md',
+        'versionA': published_base['id'],
+        'versionB': candidate['id'],
+    })
+    assert response.status_code == 200, response.data
+    assert response.get_json()['reviewerCanDecide'] is True
+
     response = owner.post(f'/api/projects/{project_id}/files/compare', json={
         'path': 'docs/one.md',
         'versionA': older_version['id'],
@@ -290,18 +298,17 @@ try:
             'decision': 'accept',
         }]},
     )
-    assert response.status_code == 403, response.data
-    assert codex.post(f"/api/projects/{project_id}/proposals/{proposal['id']}/publish").status_code == 403
-    print('PASS: proposal_author_cannot_review_or_publish')
+    assert response.status_code == 200, response.data
+    print('PASS: proposal_author_can_review')
 
-    proposal = decide(owner, project_id, proposal)
+    proposal = decide(codex, project_id, proposal)
     assert proposal['review']['complete'] is True
     assert proposal['review']['canPublish'] is True
-    response = owner.post(f"/api/projects/{project_id}/proposals/{proposal['id']}/publish")
+    response = codex.post(f"/api/projects/{project_id}/proposals/{proposal['id']}/publish")
     assert response.status_code == 200, response.data
     published = response.get_json()
     assert published['status'] == 'accepted'
-    assert published['reviewerUsername'] == 'owner'
+    assert published['reviewerUsername'] == 'codex'
     response = owner.delete(f"/api/projects/{project_id}/proposals/{proposal['id']}")
     assert response.status_code == 409, response.data
     assert response.get_json()['code'] == 'accepted'
@@ -462,6 +469,12 @@ try:
             ('2000-01-01T00:00:00+00:00', project_id),
         )
         get_db().commit()
+    listed_project = next(
+        item for item in owner.get('/api/projects').get_json()
+        if item['id'] == project_id
+    )
+    assert listed_project['lockOwnerId'] is None
+    assert listed_project['lockExpiresAt'] is None
     response = owner.post(f'/api/projects/{project_id}/lock')
     assert response.status_code == 200, response.data
     assert response.get_json()['lockOwnerId'] == owner_user['id']

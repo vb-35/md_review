@@ -389,7 +389,7 @@
 
     if (state.comparedDiff.proposalId) {
       if (!state.comparedDiff.reviewerCanDecide) {
-        alert('A different editor must review this proposed version.');
+        alert('Select the proposal base and ensure you have edit access.');
         return;
       }
       const result = await App.api(

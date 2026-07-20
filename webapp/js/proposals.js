@@ -12,7 +12,6 @@
     return !!state.currentUser
       && !!state.currentProject
       && ['owner', 'editor'].includes(state.currentProject.accessRole)
-      && state.currentUser.id !== proposal.authorId
       && proposal.status === 'pending';
   }
 
@@ -186,9 +185,6 @@
     review.classList.remove('hidden');
     const reviewerEnabled = canReview(proposal);
     const deleteEnabled = canDeleteProposal(proposal);
-    const authorNotice = state.currentUser && state.currentUser.id === proposal.authorId
-      ? '<div class="proposal-notice">Proposal authors cannot review or publish their own work.</div>'
-      : '';
     const staleNotice = proposal.staleReason
       ? `<div class="proposal-notice danger">${esc(proposal.staleReason)} Ask Codex to regenerate from the current project.</div>`
       : '';
@@ -206,7 +202,7 @@
         </div>
         <strong>${esc(progress)}</strong>
       </div>
-      ${authorNotice}${staleNotice}
+      ${staleNotice}
       ${reviewerEnabled ? `<div class="proposal-bulk-actions">
         <button type="button" data-bulk-decision="accept">Accept all</button>
         <button type="button" data-bulk-decision="refuse">Refuse all</button>
