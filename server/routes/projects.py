@@ -450,27 +450,82 @@ def save_project_file_content(project_id):
     current_head = get_project_head_commit(project_root)
     if base_commit != current_head:
         return jsonify({'error': 'File changed since it was loaded', 'currentCommitSha': current_head}), 409
-
     if not abs_path.exists():
         return jsonify({'error': 'Not found'}), 404
 
+    proposal_id = str(data.get('proposalId') or '').strip()
+    proposal_file = None
+    decisions_hash = None
+    if proposal_id:
+        from routes.proposals import (
+            get_proposal_file,
+            proposal_file_review,
+            proposal_row,
+            refresh_stale_status,
+            decision_map,
+        )
+        proposal = proposal_row(proposal_id, project_id)
+        if not proposal:
+            return jsonify({'error': 'Proposal not found'}), 404
+        proposal = refresh_stale_status(proposal, project_root)
+        if proposal['status'] != 'pending':
+            return jsonify({'error': f"Proposal is {proposal['status']}", 'code': proposal['status']}), 409
+        proposal_file = get_proposal_file(proposal_id, file_path)
+        if not proposal_file:
+            return jsonify({'error': 'File is not part of this proposal'}), 400
+        decisions_hash = proposal_file_review(
+            proposal_file, decision_map(proposal_id)
+        )['decisionsHash']
+
     old_content = read_project_file(project_root, file_path, '')
     content = data.get('content', old_content)
+    if not isinstance(content, str):
+        return jsonify({'error': 'content must be text'}), 400
     now = datetime.now(timezone.utc).isoformat()
-    write_project_file(project_root, file_path, content)
-    head = git_commit_paths(project_root, [file_path], f'Save {file_path}')
-    insert_file_version(project_id, file_path, content, 'Saved file', uid, now)
-    get_db().execute(
-        "UPDATE projects SET updated_by = ?, updated_at = ? WHERE id = ?",
-        (uid, now, project_id)
-    )
+    head = current_head
+    changed = content != old_content
+    if changed:
+        write_project_file(project_root, file_path, content)
+        head = git_commit_paths(project_root, [file_path], f'Save {file_path}')
+        insert_file_version(project_id, file_path, content, 'Saved file', uid, now)
+        get_db().execute(
+            'UPDATE projects SET updated_by = ?, updated_at = ? WHERE id = ?',
+            (uid, now, project_id)
+        )
+
+    if proposal_file:
+        get_db().execute(
+            'UPDATE revision_proposal_files SET applied_decisions_hash = ?, '
+            'applied_commit_sha = ?, applied_at = ? '
+            'WHERE proposal_id = ? AND file_path = ?',
+            (decisions_hash, head, now, proposal_id, file_path),
+        )
+        get_db().execute(
+            'UPDATE revision_proposals SET base_commit_sha = ?, stale_reason = NULL '
+            "WHERE id = ? AND project_id = ? AND status = 'pending'",
+            (head, proposal_id, project_id),
+        )
     get_db().commit()
-    return jsonify({
+
+    response = {
         'projectId': project_id,
         'filePath': file_path,
         'content': content,
         'currentCommitSha': head,
-    })
+        'versionCreated': changed,
+    }
+    if proposal_file:
+        from routes.proposals import proposal_detail, proposal_row
+        detail = proposal_detail(proposal_row(proposal_id, project_id))
+        applied_file = next(file for file in detail['files'] if file['filePath'] == file_path)
+        response['proposalReview'] = {
+            'proposalId': proposal_id,
+            'filePath': file_path,
+            'applied': applied_file['applied'],
+            'needsSave': applied_file['needsSave'],
+            'canClose': detail['review']['canClose'],
+        }
+    return jsonify(response)
 
 
 @project_bp.route('/projects/<project_id>/assets', methods=['POST'])

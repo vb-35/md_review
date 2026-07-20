@@ -119,6 +119,7 @@ try:
     assert editor.delete(
         f"/api/projects/{project_id}/proposals/{owner_delete_proposal['id']}"
     ).status_code == 403
+    assert owner.post(f'/api/projects/{project_id}/lock').status_code == 200
     decision_item = owner_delete_proposal['files'][0]['reviewItems'][0]
     response = owner.put(
         f"/api/projects/{project_id}/proposals/{owner_delete_proposal['id']}/decisions",
@@ -149,6 +150,7 @@ try:
             (owner_delete_proposal['id'],),
         ).fetchone()[0] == 0
     assert project_content(owner, project_id, 'docs/two.md')['content'] == 'alpha\n'
+    assert owner.delete(f'/api/projects/{project_id}/lock').status_code == 200
 
     response = codex.post(f'/api/projects/{project_id}/proposals', json={
         'title': 'Author deletion test',
@@ -226,11 +228,6 @@ try:
     assert candidate['author_id'] == codex_user['id']
     assert candidate['author_name'] == 'codex'
     assert candidate['baseVersionId'] == published_base['id']
-    response = owner.get(
-        f"/api/projects/{project_id}/files/versions/{candidate['id']}?path=docs/one.md"
-    )
-    assert response.status_code == 200, response.data
-    assert response.get_json()['content'] == '# One clarified\nkeep\nnew accepted line\n'
 
     response = owner.post(f'/api/projects/{project_id}/files/compare', json={
         'path': 'docs/one.md',
@@ -241,12 +238,27 @@ try:
     comparison = response.get_json()
     assert comparison['proposalId'] == proposal['id']
     assert comparison['proposalAuthorUsername'] == 'codex'
-    assert comparison['reviewerCanDecide'] is True
-    assert comparison['labelB'] == 'Proposed by codex'
+    assert comparison['reviewerCanDecide'] is False
     assert comparison['proposalBaseMatches'] is True
     assert comparison['proposalDecisions'] == {}
 
-    response = codex.post(f'/api/projects/{project_id}/files/compare', json={
+    one_file = next(item for item in proposal['files'] if item['filePath'] == 'docs/one.md')
+    first_review_item = one_file['reviewItems'][0]
+    first_item_id = first_review_item['itemId']
+    response = owner.put(
+        f"/api/projects/{project_id}/proposals/{proposal['id']}/decisions",
+        json={'items': [{
+            'kind': 'diff',
+            'filePath': 'docs/one.md',
+            'itemId': first_item_id,
+            'decision': 'accept',
+        }]},
+    )
+    assert response.status_code == 423, response.data
+    print('PASS: proposal_decisions_require_persistent_lock')
+
+    assert owner.post(f'/api/projects/{project_id}/lock').status_code == 200
+    response = owner.post(f'/api/projects/{project_id}/files/compare', json={
         'path': 'docs/one.md',
         'versionA': published_base['id'],
         'versionB': candidate['id'],
@@ -264,11 +276,7 @@ try:
     assert historical_comparison['diff']
     assert historical_comparison['proposalBaseMatches'] is False
     assert historical_comparison['reviewerCanDecide'] is False
-    assert historical_comparison['proposalDecisions'] == {}
 
-    one_file = next(item for item in proposal['files'] if item['filePath'] == 'docs/one.md')
-    first_review_item = one_file['reviewItems'][0]
-    first_item_id = first_review_item['itemId']
     response = owner.put(
         f"/api/projects/{project_id}/proposals/{proposal['id']}/decisions",
         json={'items': [{
@@ -279,71 +287,133 @@ try:
         }]},
     )
     assert response.status_code == 200, response.data
-    response = owner.post(f'/api/projects/{project_id}/files/compare', json={
-        'path': 'docs/one.md',
-        'versionA': published_base['id'],
-        'versionB': candidate['id'],
-    })
+    decision_detail = response.get_json()
+    decision_file = next(file for file in decision_detail["files"] if file["filePath"] == "docs/one.md")
+    assert decision_file["needsSave"] is True
+    response = owner.post(
+        f"/api/projects/{project_id}/proposals/{proposal['id']}/preview",
+        json={'filePath': 'docs/one.md', 'baselineContent': '# One\nkeep\n'},
+    )
     assert response.status_code == 200, response.data
-    assert response.get_json()['proposalDecisions'][first_item_id] == 'accept'
+    accepted_projection = response.get_json()['content']
+    assert accepted_projection != '# One\nkeep\n'
     assert project_content(owner, project_id, 'docs/one.md')['content'] == '# One\nkeep\n'
-    assert owner.get(f'/api/projects/{project_id}').get_json()['lockOwnerId'] is None
-    print('PASS: proposal_acts_as_reviewable_version_without_changing_live_file')
 
-    response = codex.put(
+    response = owner.put(
         f"/api/projects/{project_id}/proposals/{proposal['id']}/decisions",
         json={'items': [{
-            'kind': 'comment',
-            'itemId': proposal['commentActions'][0]['id'],
-            'decision': 'accept',
+            'kind': 'diff',
+            'filePath': 'docs/one.md',
+            'itemId': first_item_id,
+            'decision': 'refuse',
         }]},
     )
     assert response.status_code == 200, response.data
-    print('PASS: proposal_author_can_review')
-
-    proposal = decide(codex, project_id, proposal)
-    assert proposal['review']['complete'] is True
-    assert proposal['review']['canPublish'] is True
-    response = codex.post(f"/api/projects/{project_id}/proposals/{proposal['id']}/publish")
+    response = owner.post(
+        f"/api/projects/{project_id}/proposals/{proposal['id']}/preview",
+        json={'filePath': 'docs/one.md', 'baselineContent': '# One\nkeep\n'},
+    )
     assert response.status_code == 200, response.data
-    published = response.get_json()
-    assert published['status'] == 'accepted'
-    assert published['reviewerUsername'] == 'codex'
-    response = owner.delete(f"/api/projects/{project_id}/proposals/{proposal['id']}")
-    assert response.status_code == 409, response.data
-    assert response.get_json()['code'] == 'accepted'
-    assert published['appliedCommitSha'] != base_commit
-    assert project_content(owner, project_id, 'docs/one.md')['content'] == '# One clarified\nkeep\nnew accepted line\n'
+    assert response.get_json()['content'] == '# One\nkeep\n'
+    print('PASS: proposal_projection_is_live_unsaved_and_recomputes_decision_flips')
+
+    proposal = decide(owner, project_id, proposal)
+    assert proposal['review']['complete'] is True
+    assert proposal['review']['canClose'] is False
+    response = owner.post(
+        f"/api/projects/{project_id}/proposals/{proposal['id']}/preview",
+        json={'filePath': 'docs/one.md', 'baselineContent': '# One\nkeep\n'},
+    )
+    assert response.status_code == 200, response.data
+    projected_one = response.get_json()['content']
+    assert projected_one == '# One clarified\nkeep\nnew accepted line\n'
+
+    response = owner.put(f'/api/projects/{project_id}/files/content', json={
+        'path': 'docs/one.md',
+        'content': projected_one,
+        'baseCommitSha': base_commit,
+        'proposalId': proposal['id'],
+    })
+    assert response.status_code == 200, response.data
+    saved_one = response.get_json()
+    assert saved_one['versionCreated'] is True
+    assert saved_one['proposalReview']['applied'] is True
+    assert saved_one['proposalReview']['canClose'] is False
+    saved_head = saved_one['currentCommitSha']
+
+    proposal = owner.get(
+        f"/api/projects/{project_id}/proposals/{proposal['id']}"
+    ).get_json()
+    applied_one = next(file for file in proposal['files'] if file['filePath'] == 'docs/one.md')
+    pending_two = next(file for file in proposal['files'] if file['filePath'] == 'docs/two.md')
+    assert applied_one['applied'] is True
+    assert pending_two['needsSave'] is True
+    assert proposal['status'] == 'pending'
+
+    response = owner.post(
+        f"/api/projects/{project_id}/proposals/{proposal['id']}/preview",
+        json={'filePath': 'docs/two.md', 'baselineContent': 'alpha\n'},
+    )
+    assert response.status_code == 200, response.data
+    assert response.get_json()['content'] == 'alpha\n'
+    response = owner.put(f'/api/projects/{project_id}/files/content', json={
+        'path': 'docs/two.md',
+        'content': 'alpha\n',
+        'baseCommitSha': saved_head,
+        'proposalId': proposal['id'],
+    })
+    assert response.status_code == 200, response.data
+    saved_two = response.get_json()
+    assert saved_two['versionCreated'] is False
+    assert saved_two['currentCommitSha'] == saved_head
+    assert saved_two['proposalReview']['applied'] is True
+    assert saved_two['proposalReview']['canClose'] is True
+    two_versions = owner.get(
+        f'/api/projects/{project_id}/files/versions?path=docs/two.md'
+    ).get_json()
+    assert len([item for item in two_versions if item['kind'] == 'published']) == 1
+    print('PASS: proposal_files_save_individually_and_refused_noop_creates_no_version')
+
+    response = owner.post(f"/api/projects/{project_id}/proposals/{proposal['id']}/close")
+    assert response.status_code == 200, response.data
+    closed = response.get_json()
+    assert closed['status'] == 'closed'
+    assert closed['review']['canClose'] is True
+    assert closed['reviewerUsername'] == 'owner'
+    assert closed['appliedCommitSha'] == saved_head
+    assert project_content(owner, project_id, 'docs/one.md')['content'] == projected_one
     assert project_content(owner, project_id, 'docs/two.md')['content'] == 'alpha\n'
 
     project_root = os.path.join(Config.REPO_ROOT, project['projectPath'])
     commit_count = subprocess.check_output(
-        ['git', 'rev-list', '--count', f"{base_commit}..{published['appliedCommitSha']}"],
+        ['git', 'rev-list', '--count', f"{base_commit}..{saved_head}"],
         cwd=project_root,
         text=True,
     ).strip()
     assert commit_count == '1'
     versions = owner.get(f'/api/projects/{project_id}/files/versions?path=docs/one.md').get_json()
-    assert versions[0]['author_id'] == codex_user['id']
-    assert versions[0]['author_name'] == 'codex'
-    assert versions[0]['message'] == 'Accepted proposal: Clarify the introduction'
-    two_versions = owner.get(f'/api/projects/{project_id}/files/versions?path=docs/two.md').get_json()
-    assert len(two_versions) == 1
+    assert all(item.get('proposalId') != proposal['id'] for item in versions)
+    assert versions[0]['author_id'] == owner_user['id']
+    assert versions[0]['author_name'] == 'owner'
+    assert versions[0]['message'] == 'Saved file'
     threads = owner.get(
-        f"/api/projects/{project_id}/threads?commitSha={published['appliedCommitSha']}&filePath=docs/one.md"
+        f"/api/projects/{project_id}/threads?commitSha={saved_head}&filePath=docs/one.md"
     ).get_json()
     thread = next(item for item in threads if item['id'] == thread_id)
     assert thread['resolved'] is True
     assert thread['resolvedBy'] == codex_user['id']
     assert any(comment.get('username') == 'codex' for comment in thread['comments'])
-    assert owner.get(f'/api/projects/{project_id}').get_json()['lockOwnerId'] is None
-    print('PASS: selective_publish_is_one_commit_with_codex_authorship')
+    assert any(item['decision'] for file in closed['files'] for item in file['reviewItems'])
+    assert editor.delete(f"/api/projects/{project_id}/proposals/{proposal['id']}").status_code == 403
+    response = owner.delete(f"/api/projects/{project_id}/proposals/{proposal['id']}")
+    assert response.status_code == 200, response.data
+    print('PASS: close_applies_comments_retains_decisions_and_closed_proposal_is_deletable')
+    assert owner.delete(f'/api/projects/{project_id}/lock').status_code == 200
 
-    current_commit = published['appliedCommitSha']
     response = codex.post(f'/api/projects/{project_id}/proposals', json={
         'title': 'Will become stale',
         'summary': '',
-        'baseCommitSha': current_commit,
+        'baseCommitSha': saved_head,
         'files': [{'path': 'docs/two.md', 'content': 'alpha\nCodex candidate\n'}],
     })
     assert response.status_code == 201, response.data
@@ -352,21 +422,19 @@ try:
     response = owner.put(f'/api/projects/{project_id}/files/content', json={
         'path': 'docs/two.md',
         'content': 'alpha\nhuman edit\n',
-        'baseCommitSha': current_commit,
+        'baseCommitSha': saved_head,
     })
     assert response.status_code == 200, response.data
-    assert owner.delete(f'/api/projects/{project_id}/lock').status_code == 200
+    latest_commit = response.get_json()['currentCommitSha']
     response = owner.get(f"/api/projects/{project_id}/proposals/{stale_proposal['id']}")
     assert response.status_code == 200, response.data
     assert response.get_json()['status'] == 'stale'
-    assert owner.post(f"/api/projects/{project_id}/proposals/{stale_proposal['id']}/publish").status_code == 409
-    versions = owner.get(
-        f'/api/projects/{project_id}/files/versions?path=docs/two.md'
-    ).get_json()
-    assert all(item.get('proposalId') != stale_proposal['id'] for item in versions)
-    print('PASS: head_change_marks_proposal_stale')
+    assert owner.post(
+        f"/api/projects/{project_id}/proposals/{stale_proposal['id']}/close"
+    ).status_code == 409
+    print('PASS: unrelated_head_change_marks_proposal_stale')
+    assert owner.delete(f'/api/projects/{project_id}/lock').status_code == 200
 
-    latest_commit = project_content(owner, project_id, 'docs/two.md')['currentCommitSha']
     response = owner.post('/api/comments/threads', json={
         'projectId': project_id,
         'filePath': 'docs/two.md',
@@ -412,55 +480,53 @@ try:
     assert response.status_code == 201, response.data
     rollback_thread_id = response.get_json()['id']
     response = codex.post(f'/api/projects/{project_id}/proposals', json={
-        'title': 'Rollback publication',
+        'title': 'Close rollback',
         'summary': '',
         'baseCommitSha': latest_commit,
-        'files': [{'path': 'docs/two.md', 'content': 'alpha\nhuman edit\nrollback candidate\n'}],
+        'files': [{'path': 'docs/two.md', 'content': 'alpha\nhuman edit\nreviewed candidate\n'}],
         'commentActions': [{
             'action': 'reply',
             'filePath': 'docs/two.md',
             'commitSha': latest_commit,
             'threadId': rollback_thread_id,
-            'body': 'This save is forced to fail once.',
+            'body': 'This close is forced to fail once.',
         }],
     })
     assert response.status_code == 201, response.data
     rollback_proposal = response.get_json()
-    rollback_items = [
-        {
-            'kind': 'diff',
-            'filePath': file['filePath'],
-            'itemId': item['itemId'],
-            'decision': 'accept',
-        }
-        for file in rollback_proposal['files']
-        for item in file['reviewItems']
-    ] + [
-        {
-            'kind': 'comment',
-            'itemId': action['id'],
-            'decision': 'accept',
-        }
-        for action in rollback_proposal['commentActions']
-    ]
-    response = owner.put(
-        f"/api/projects/{project_id}/proposals/{rollback_proposal['id']}/decisions",
-        json={'items': rollback_items},
+    assert owner.post(f'/api/projects/{project_id}/lock').status_code == 200
+    rollback_proposal = decide(owner, project_id, rollback_proposal)
+    response = owner.post(
+        f"/api/projects/{project_id}/proposals/{rollback_proposal['id']}/preview",
+        json={'filePath': 'docs/two.md', 'baselineContent': 'alpha\nhuman edit\n'},
     )
     assert response.status_code == 200, response.data
+    rollback_content = response.get_json()['content']
+    response = owner.put(f'/api/projects/{project_id}/files/content', json={
+        'path': 'docs/two.md',
+        'content': rollback_content,
+        'baseCommitSha': latest_commit,
+        'proposalId': rollback_proposal['id'],
+    })
+    assert response.status_code == 200, response.data
+    rollback_head = response.get_json()['currentCommitSha']
     with patch('routes.proposals.save_comment_store', side_effect=RuntimeError('forced comment failure')):
-        response = owner.post(f"/api/projects/{project_id}/proposals/{rollback_proposal['id']}/publish")
+        response = owner.post(
+            f"/api/projects/{project_id}/proposals/{rollback_proposal['id']}/close"
+        )
     assert response.status_code == 500, response.data
     rolled_back = project_content(owner, project_id, 'docs/two.md')
-    assert rolled_back['content'] == 'alpha\nhuman edit\n'
-    assert rolled_back['currentCommitSha'] == latest_commit
+    assert rolled_back['content'] == rollback_content
+    assert rolled_back['currentCommitSha'] == rollback_head
     response = owner.get(f"/api/projects/{project_id}/proposals/{rollback_proposal['id']}")
     assert response.get_json()['status'] == 'pending'
-    assert owner.get(f'/api/projects/{project_id}').get_json()['lockOwnerId'] is None
-    response = owner.post(f"/api/projects/{project_id}/proposals/{rollback_proposal['id']}/publish")
+    response = owner.post(
+        f"/api/projects/{project_id}/proposals/{rollback_proposal['id']}/close"
+    )
     assert response.status_code == 200, response.data
-    assert response.get_json()['status'] == 'accepted'
-    print('PASS: failed_publication_rolls_back_files_status_and_lock')
+    assert response.get_json()['status'] == 'closed'
+    assert owner.delete(f'/api/projects/{project_id}/lock').status_code == 200
+    print('PASS: failed_close_keeps_saved_files_and_pending_status')
 
     assert codex.post(f'/api/projects/{project_id}/lock').status_code == 200
     with app.app_context():

@@ -3,7 +3,7 @@ from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request, session
 
-from models import get_db, get_project_for_user, user_can_edit_project
+from models import get_db, get_project_for_user, project_lock_is_expired, user_can_edit_project
 from utils.diff import apply_diff_decisions, compute_diff
 from utils.repo_storage import (
     git_commit_paths,
@@ -334,6 +334,7 @@ def compare_versions(project_id):
     proposal_base_matches = bool(proposal and va['content'] == proposal['base_content'])
     diff_rows = compute_diff(va['content'], vb['content'])
     decisions = {}
+    proposal_file_state = None
     if proposal_base_matches:
         decisions = {
             row['item_id']: row['decision']
@@ -343,6 +344,11 @@ def compare_versions(project_id):
                 (proposal['proposal_id'], file_path)
             ).fetchall()
         }
+        from routes.proposals import decision_map, get_proposal_file, proposal_file_review
+        proposal_file_state = proposal_file_review(
+            get_proposal_file(proposal['proposal_id'], file_path),
+            decision_map(proposal['proposal_id']),
+        )
     label_a = f"v{va['version']}" if va['kind'] == 'published' else 'Proposed version'
     label_b = f"v{vb['version']}" if vb['kind'] == 'published' else f"Proposed by {vb['author_name']}"
     return jsonify({
@@ -362,9 +368,16 @@ def compare_versions(project_id):
         'proposalAuthorUsername': proposal['author_name'] if proposal else None,
         'proposalDecisions': decisions,
         'proposalBaseMatches': proposal_base_matches if proposal else None,
+        'proposalFileApplied': proposal_file_state['applied'] if proposal_file_state else None,
+        'proposalDecisionSnapshotApplied': (
+            proposal_file_state['decisionSnapshotApplied'] if proposal_file_state else None
+        ),
         'reviewerCanDecide': bool(
             proposal_base_matches
             and user_can_edit_project(project_id, uid)
+            and project
+            and not project_lock_is_expired(project)
+            and project.get('lock_owner_id') == uid
         ),
     })
 

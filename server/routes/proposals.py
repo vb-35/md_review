@@ -11,28 +11,26 @@ from models import (
     acquire_project_lock,
     get_db,
     get_project_for_user,
+    project_lock_is_expired,
     release_project_lock,
     user_can_edit_project,
 )
 from utils.diff import apply_diff_decisions, compute_diff
 from utils.repo_storage import (
     get_project_head_commit,
-    git_commit_paths,
     load_applicable_comment_stores,
     normalize_project_file_path,
     project_write_lock,
     read_project_file,
-    reset_project_to_commit,
     resolve_project_file,
     resolve_project_root,
     save_comment_store,
-    write_project_file,
 )
 
 
 proposal_bp = Blueprint('proposals', __name__)
 MARKDOWN_EXTENSIONS = ('.md', '.markdown')
-PROPOSAL_STATUSES = {'pending', 'accepted', 'rejected', 'stale'}
+PROPOSAL_STATUSES = {'pending', 'closed', 'accepted', 'rejected', 'stale'}
 DECISIONS = {'accept', 'refuse'}
 
 
@@ -69,6 +67,21 @@ def require_editor(project_id, user_id):
         return None, error
     if not user_can_edit_project(project_id, user_id):
         return None, (jsonify({'error': 'Forbidden'}), 403)
+    return project, None
+
+
+def require_held_project_lock(project_id, user_id):
+    project, error = require_editor(project_id, user_id)
+    if error:
+        return None, error
+    if project_lock_is_expired(project) or project.get('lock_owner_id') != user_id:
+        return None, (jsonify({
+            'error': 'Take the project lock first.',
+            'code': 'project_lock_required',
+            'lockOwnerId': project.get('lock_owner_id'),
+            'lockOwnerUsername': project.get('lock_owner_username'),
+            'lockExpiresAt': project.get('lock_expires_at'),
+        }), 423)
     return project, None
 
 
@@ -174,11 +187,18 @@ def annotate_diff_decisions(diff_rows, file_path, decisions):
 def load_proposal_files(proposal_id):
     return [
         dict(row) for row in get_db().execute(
-            'SELECT proposal_id, file_path, base_content, proposed_content '
-            'FROM revision_proposal_files WHERE proposal_id = ? ORDER BY file_path',
+            'SELECT * FROM revision_proposal_files WHERE proposal_id = ? ORDER BY file_path',
             (proposal_id,)
         ).fetchall()
     ]
+
+
+def get_proposal_file(proposal_id, file_path):
+    row = get_db().execute(
+        'SELECT * FROM revision_proposal_files WHERE proposal_id = ? AND file_path = ?',
+        (proposal_id, file_path),
+    ).fetchone()
+    return dict(row) if row else None
 
 
 def load_comment_actions(proposal_id):
@@ -198,6 +218,67 @@ def load_decisions(proposal_id):
             (proposal_id,)
         ).fetchall()
     ]
+
+
+def decision_map(proposal_id):
+    return {
+        (item['item_kind'], item['file_path'], item['item_id']): item
+        for item in load_decisions(proposal_id)
+    }
+
+
+def decision_value(decisions, key):
+    saved = decisions.get(key)
+    if isinstance(saved, dict):
+        return saved.get('decision')
+    return saved
+
+
+def proposal_file_review(item, decisions):
+    diff = compute_diff(item['base_content'], item['proposed_content'])
+    chunks = annotate_diff_decisions(diff, item['file_path'], decisions)
+    fingerprint_payload = [
+        [chunk['itemId'], decision_value(decisions, ('diff', item['file_path'], chunk['itemId']))]
+        for chunk in chunks
+    ]
+    decisions_hash = hashlib.sha256(
+        json.dumps(fingerprint_payload, separators=(',', ':')).encode('utf-8')
+    ).hexdigest()
+    has_decisions = any(chunk['decision'] in DECISIONS for chunk in chunks)
+    complete = bool(chunks) and all(chunk['decision'] in DECISIONS for chunk in chunks)
+    snapshot_applied = item.get('applied_decisions_hash') == decisions_hash
+    applied = complete and snapshot_applied
+    return {
+        'diff': diff,
+        'chunks': chunks,
+        'decisionsHash': decisions_hash,
+        'decisionComplete': complete,
+        'decisionSnapshotApplied': snapshot_applied,
+        'applied': applied,
+        'needsSave': has_decisions and not snapshot_applied,
+    }
+
+
+def project_proposal_file(item, baseline_content, decisions):
+    review = proposal_file_review(item, decisions)
+    payload = [
+        {
+            'rowId': chunk['rowId'],
+            'chunkId': chunk['chunkId'],
+            'decision': chunk['decision'],
+        }
+        for chunk in review['chunks']
+        if chunk['decision'] in DECISIONS
+    ]
+    applied = apply_diff_decisions(
+        item['base_content'], item['proposed_content'], baseline_content, payload
+    )
+    return {
+        'content': applied['content'],
+        'diff': applied['diff'],
+        'decisionsHash': review['decisionsHash'],
+        'decisionComplete': review['decisionComplete'],
+    }
 
 
 def stale_reason(row, project_root):
@@ -245,18 +326,20 @@ def required_items(proposal_id):
 
 
 def proposal_detail(row):
-    decisions = {
-        (item['item_kind'], item['file_path'], item['item_id']): item
-        for item in load_decisions(row['id'])
-    }
+    decisions = decision_map(row['id'])
     files = []
     for item in load_proposal_files(row['id']):
-        diff = compute_diff(item['base_content'], item['proposed_content'])
-        chunks = annotate_diff_decisions(diff, item['file_path'], decisions)
+        review = proposal_file_review(item, decisions)
         files.append({
             'filePath': item['file_path'],
-            'diff': diff,
-            'reviewItems': chunks,
+            'diff': review['diff'],
+            'reviewItems': review['chunks'],
+            'decisionComplete': review['decisionComplete'],
+            'decisionSnapshotApplied': review['decisionSnapshotApplied'],
+            'applied': review['applied'],
+            'needsSave': review['needsSave'],
+            'appliedCommitSha': item.get('applied_commit_sha'),
+            'appliedAt': item.get('applied_at'),
         })
     actions = []
     for action in load_comment_actions(row['id']):
@@ -272,7 +355,12 @@ def proposal_detail(row):
         })
     required = required_items(row['id'])
     decided = {key for key in decisions if key in required}
-    accepted = sum(1 for key, value in decisions.items() if key in required and value['decision'] == 'accept')
+    accepted = sum(
+        1 for key, value in decisions.items()
+        if key in required and value['decision'] == 'accept'
+    )
+    complete = bool(required) and len(required) == len(decided)
+    files_applied = all(file['applied'] for file in files)
     detail = serialize_proposal(row)
     detail.update({
         'files': files,
@@ -281,8 +369,8 @@ def proposal_detail(row):
             'required': len(required),
             'decided': len(decided),
             'accepted': accepted,
-            'complete': bool(required) and len(required) == len(decided),
-            'canPublish': bool(required) and len(required) == len(decided) and accepted > 0,
+            'complete': complete,
+            'canClose': complete and files_applied,
         },
     })
     return detail
@@ -490,12 +578,49 @@ def delete_proposal(project_id, proposal_id):
     return jsonify({'deleted': True, 'id': proposal_id})
 
 
+@proposal_bp.route('/projects/<project_id>/proposals/<proposal_id>/preview', methods=['POST'])
+@require_auth
+@with_proposal_project_lock
+def preview_proposal_file(project_id, proposal_id):
+    uid = session['user_id']
+    project, error = require_held_project_lock(project_id, uid)
+    if error:
+        return error
+    row = proposal_row(proposal_id, project_id)
+    if not row:
+        return jsonify({'error': 'Not found'}), 404
+    row = refresh_stale_status(row, resolve_project_root(project['project_path']))
+    if row['status'] != 'pending':
+        return jsonify({'error': f"Proposal is {row['status']}", 'code': row['status']}), 409
+
+    data = request.get_json() or {}
+    try:
+        file_path = normalize_project_file_path(data.get('filePath', ''))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    baseline_content = data.get('baselineContent')
+    if not isinstance(baseline_content, str):
+        return jsonify({'error': 'baselineContent required'}), 400
+    item = get_proposal_file(proposal_id, file_path)
+    if not item:
+        return jsonify({'error': 'Proposal file not found'}), 404
+    try:
+        projected = project_proposal_file(item, baseline_content, decision_map(proposal_id))
+    except RuntimeError as exc:
+        return jsonify({'error': str(exc), 'conflict': True}), 409
+    return jsonify({
+        'proposalId': proposal_id,
+        'filePath': file_path,
+        **projected,
+    })
+
+
 @proposal_bp.route('/projects/<project_id>/proposals/<proposal_id>/decisions', methods=['PUT'])
 @require_auth
 @with_proposal_project_lock
 def save_proposal_decisions(project_id, proposal_id):
     uid = session['user_id']
-    project, error = require_editor(project_id, uid)
+    project, error = require_held_project_lock(project_id, uid)
     if error:
         return error
     row = proposal_row(proposal_id, project_id)
@@ -576,135 +701,70 @@ def restore_comment_stores(project_root, snapshots):
         save_comment_store(project_root, file_path, commit_sha, store)
 
 
-@proposal_bp.route('/projects/<project_id>/proposals/<proposal_id>/publish', methods=['POST'])
+@proposal_bp.route('/projects/<project_id>/proposals/<proposal_id>/close', methods=['POST'])
 @require_auth
-def publish_proposal(project_id, proposal_id):
+@with_proposal_project_lock
+def close_proposal(project_id, proposal_id):
     uid = session['user_id']
-    project, error = require_editor(project_id, uid)
+    project, error = require_held_project_lock(project_id, uid)
     if error:
         return error
     row = proposal_row(proposal_id, project_id)
     if not row:
         return jsonify({'error': 'Not found'}), 404
+    row = refresh_stale_status(row, resolve_project_root(project['project_path']))
     if row['status'] != 'pending':
         return jsonify({'error': f"Proposal is {row['status']}", 'code': row['status']}), 409
 
-    release_after, lock_error = acquire_temporary_lease(project_id, uid)
-    if lock_error:
-        return lock_conflict(project_id, uid)
+    detail = proposal_detail(row)
+    if not detail['review']['complete']:
+        return jsonify({'error': 'Every proposal item must be accepted or refused'}), 409
+    unapplied = [file['filePath'] for file in detail['files'] if not file['applied']]
+    if unapplied:
+        return jsonify({
+            'error': 'Save every reviewed file after its latest decision before closing',
+            'files': unapplied,
+        }), 409
 
+    decisions = {
+        (item['item_kind'], item['file_path'], item['item_id']): item['decision']
+        for item in load_decisions(proposal_id)
+    }
+    accepted_actions = [
+        action for action in load_comment_actions(proposal_id)
+        if decisions[('comment', '', action['id'])] == 'accept'
+    ]
     project_root = resolve_project_root(project['project_path'])
     comment_snapshots = {}
-    external_started = False
+    comments_started = False
     try:
-        with project_write_lock(project_root):
-            row = proposal_row(proposal_id, project_id)
-            if row['status'] != 'pending':
-                return jsonify({'error': f"Proposal is {row['status']}", 'code': row['status']}), 409
-            reason = stale_reason(row, project_root)
-            if reason:
-                conn = get_db()
-                conn.execute(
-                    "UPDATE revision_proposals SET status = 'stale', stale_reason = ? WHERE id = ?",
-                    (reason, proposal_id)
-                )
-                conn.commit()
-                return jsonify({'error': reason, 'code': 'stale'}), 409
+        if accepted_actions:
+            comment_stores, comment_snapshots = prepare_comment_actions(
+                project_root, accepted_actions, row['author_id'], row['author_username']
+            )
+            comments_started = True
+            save_comment_stores(project_root, comment_stores)
 
-            required = required_items(proposal_id)
-            decisions = {
-                (item['item_kind'], item['file_path'], item['item_id']): item['decision']
-                for item in load_decisions(proposal_id)
-            }
-            if not required or any(key not in decisions for key in required):
-                return jsonify({'error': 'Every proposal item must be accepted or refused'}), 409
-            if not any(decisions[key] == 'accept' for key in required):
-                return jsonify({'error': 'At least one proposal item must be accepted'}), 409
-
-            final_files = []
-            for item in load_proposal_files(proposal_id):
-                decision_payload = []
-                diff = compute_diff(item['base_content'], item['proposed_content'])
-                for chunk in actionable_chunks(diff):
-                    decision_payload.append({
-                        'rowId': chunk['rowId'],
-                        'chunkId': chunk['chunkId'],
-                        'decision': decisions[('diff', item['file_path'], chunk['itemId'])],
-                    })
-                applied = apply_diff_decisions(
-                    item['base_content'], item['proposed_content'], item['base_content'], decision_payload
-                )
-                if applied['content'] != item['base_content']:
-                    final_files.append((item['file_path'], applied['content']))
-
-            accepted_actions = [
-                action for action in load_comment_actions(proposal_id)
-                if decisions[('comment', '', action['id'])] == 'accept'
-            ]
-
-            for file_path, content in final_files:
-                external_started = True
-                write_project_file(project_root, file_path, content)
-
-            head = row['base_commit_sha']
-            if final_files:
-                head = git_commit_paths(
-                    project_root,
-                    [path for path, _ in final_files],
-                    f"Accept proposal: {row['title']}"
-                )
-
-            if accepted_actions:
-                comment_stores, comment_snapshots = prepare_comment_actions(
-                    project_root, accepted_actions, row['author_id'], row['author_username']
-                )
-                external_started = True
-                save_comment_stores(project_root, comment_stores)
-
-            now = datetime.now(timezone.utc).isoformat()
-            conn = get_db()
-            try:
-                for file_path, content in final_files:
-                    next_version = conn.execute(
-                        'SELECT COALESCE(MAX(version), 0) + 1 FROM file_versions '
-                        'WHERE project_id = ? AND file_path = ?',
-                        (project_id, file_path)
-                    ).fetchone()[0]
-                    conn.execute(
-                        'INSERT INTO file_versions '
-                        '(id, project_id, file_path, version, content, message, author_id, created_at) '
-                        'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-                        (
-                            str(uuid.uuid4()), project_id, file_path, next_version, content,
-                            f"Accepted proposal: {row['title']}", row['author_id'], now
-                        )
-                    )
-                if final_files:
-                    conn.execute(
-                        'UPDATE projects SET updated_by = ?, updated_at = ? WHERE id = ?',
-                        (row['author_id'], now, project_id)
-                    )
-                conn.execute(
-                    "UPDATE revision_proposals SET status = 'accepted', stale_reason = NULL, "
-                    'decided_by = ?, decided_at = ?, applied_commit_sha = ? WHERE id = ?',
-                    (uid, now, head, proposal_id)
-                )
-                conn.commit()
-            except Exception:
-                conn.rollback()
-                raise
-            return jsonify(proposal_detail(proposal_row(proposal_id)))
+        now = datetime.now(timezone.utc).isoformat()
+        conn = get_db()
+        try:
+            conn.execute(
+                "UPDATE revision_proposals SET status = 'closed', stale_reason = NULL, "
+                'decided_by = ?, decided_at = ?, applied_commit_sha = ? WHERE id = ?',
+                (uid, now, get_project_head_commit(project_root), proposal_id)
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        return jsonify(proposal_detail(proposal_row(proposal_id)))
     except Exception as exc:
-        if external_started:
+        if comments_started:
             try:
-                reset_project_to_commit(project_root, row['base_commit_sha'])
                 restore_comment_stores(project_root, comment_snapshots)
             except Exception:
                 pass
-        return jsonify({'error': f'Proposal publication failed: {exc}'}), 500
-    finally:
-        if release_after:
-            release_project_lock(project_id, uid)
+        return jsonify({'error': f'Proposal close failed: {exc}'}), 500
 
 
 @proposal_bp.route('/projects/<project_id>/proposals/<proposal_id>/reject', methods=['POST'])

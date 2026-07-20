@@ -216,6 +216,10 @@
   }
 
   async function openMarkdownFile(filePath, switchView = true) {
+    const active = state.activeProposalReview;
+    if (active && active.needsSave && active.filePath !== filePath) {
+      if (!window.confirm('Discard the unsaved reviewed changes and open another file?')) return;
+    }
     state.currentProject = await App.api('GET', `/projects/${state.currentProject.id}`);
     state.currentFile = await App.api('GET', `/projects/${state.currentProject.id}/files/content?path=${encodeURIComponent(filePath)}`);
     if (App.findReplace && App.findReplace.closeToolbar) App.findReplace.closeToolbar();
@@ -228,6 +232,7 @@
     state.comparedDiffBaselineContent = state.currentFile.content || '';
     state.comparedDiffDecisions = {};
     state.lastAppliedDiffAction = null;
+    state.activeProposalReview = null;
     $('#diff-view').innerHTML = '';
     $('#diff-meta').textContent = '';
     $('#version-diff-actions').classList.add('hidden');
@@ -250,7 +255,7 @@
 
   function canApplyDiffChunks() {
     if (state.comparedDiff && state.comparedDiff.proposalId) {
-      return !!state.comparedDiff.reviewerCanDecide;
+      return !!state.comparedDiff.reviewerCanDecide && holdsCurrentLock();
     }
     return canEditCurrentProject() && holdsCurrentLock();
   }
@@ -390,8 +395,65 @@
     $('#version-select-base').value = version.baseVersionId;
   }
 
+  async function projectActiveProposalReview(needsSave = true) {
+    const review = state.activeProposalReview;
+    if (!review || !state.currentFile || review.filePath !== state.currentFile.filePath) return;
+    const result = await App.api(
+      'POST',
+      `/projects/${state.currentProject.id}/proposals/${review.proposalId}/preview`,
+      {
+        filePath: review.filePath,
+        baselineContent: state.comparedDiffBaselineContent,
+      }
+    );
+    const differsFromSavedFile = result.content !== (state.currentFile.content || '');
+    state.suspendEditorChangeTracking = true;
+    App.editor.setValue(result.content);
+    state.suspendEditorChangeTracking = false;
+    review.needsSave = needsSave;
+    state.editing = state.editing || needsSave || differsFromSavedFile;
+    App.preview.updatePreview();
+    updateHeader();
+  }
+
+  async function refreshActiveProposalReview(proposal) {
+    const review = state.activeProposalReview;
+    if (!review || !proposal || review.proposalId !== proposal.id) return;
+    const file = proposal.files.find((item) => item.filePath === review.filePath);
+    if (!file) return;
+    state.comparedDiffDecisions = Object.fromEntries(
+      file.reviewItems
+        .filter((item) => item.decision)
+        .map((item) => [`${item.rowId}::${item.chunkId}`, item.decision])
+    );
+    review.needsSave = file.needsSave;
+    renderDiff(state.comparedDiff.diff);
+    await projectActiveProposalReview(file.needsSave);
+  }
+
+  function selectedProposalId() {
+    const selected = state.versions.find((item) => item.id === state.selectedHeadId);
+    return selected && selected.kind === 'proposal' ? selected.proposalId : null;
+  }
+
   async function compareSelectedVersions() {
     if (!state.currentFile || !state.selectedBaseId || !state.selectedHeadId) return;
+    const active = state.activeProposalReview;
+    const nextProposalId = selectedProposalId();
+    const sameWorkingReview = active
+      && active.proposalId === nextProposalId
+      && active.versionAId === state.selectedBaseId
+      && active.versionBId === state.selectedHeadId;
+    if (active && active.needsSave && !sameWorkingReview) {
+      if (!window.confirm('Discard the unsaved reviewed changes and start another comparison?')) return;
+      state.suspendEditorChangeTracking = true;
+      App.editor.setValue(state.currentFile.content || '');
+      state.suspendEditorChangeTracking = false;
+      state.editing = false;
+      state.activeProposalReview = null;
+      App.preview.updatePreview();
+      updateHeader();
+    }
     const result = await App.api('POST', `/projects/${state.currentProject.id}/files/compare`, {
       path: state.currentFile.filePath,
       versionA: state.selectedBaseId,
@@ -408,6 +470,20 @@
     $('#diff-meta').textContent = `${result.labelA} → ${result.labelB}${reviewHint}`;
     $('#btn-revert').classList.toggle('hidden', !!result.proposalId);
     $('#version-diff-actions').classList.remove('hidden');
+    if (result.proposalId && result.reviewerCanDecide) {
+      state.activeProposalReview = {
+        proposalId: result.proposalId,
+        filePath: state.currentFile.filePath,
+        versionAId: result.versionAId,
+        versionBId: result.versionBId,
+        needsSave: false,
+      };
+      if (Object.keys(state.comparedDiffDecisions).length) {
+        await projectActiveProposalReview(!result.proposalDecisionSnapshotApplied);
+      }
+    } else if (!result.proposalId) {
+      state.activeProposalReview = null;
+    }
   }
 
   async function applyDiffDecision(rowId, chunkId, decision) {
@@ -443,7 +519,16 @@
       if (state.currentProposal && state.currentProposal.id === result.id) {
         state.currentProposal = result;
       }
+      state.activeProposalReview = {
+        ...(state.activeProposalReview || {}),
+        proposalId: state.comparedDiff.proposalId,
+        filePath: state.currentFile.filePath,
+        versionAId: state.comparedDiff.versionAId,
+        versionBId: state.comparedDiff.versionBId,
+        needsSave: true,
+      };
       renderDiff(state.comparedDiff.diff);
+      await projectActiveProposalReview();
       return;
     }
 
@@ -518,7 +603,16 @@
       if (state.currentProposal && state.currentProposal.id === result.id) {
         state.currentProposal = result;
       }
+      state.activeProposalReview = {
+        ...(state.activeProposalReview || {}),
+        proposalId: state.comparedDiff.proposalId,
+        filePath: state.currentFile.filePath,
+        versionAId: state.comparedDiff.versionAId,
+        versionBId: state.comparedDiff.versionBId,
+        needsSave: true,
+      };
       renderDiff(state.comparedDiff.diff);
+      await projectActiveProposalReview();
       return;
     }
 
@@ -576,6 +670,7 @@
     loadVersions,
     openMarkdownFile,
     openProjectDetail,
+    refreshActiveProposalReview,
     refreshProjectState,
     renderProjectDetail,
     renderProjectLists,

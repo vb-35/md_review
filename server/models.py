@@ -162,6 +162,23 @@ def apply_migrations(conn):
         )
         conn.commit()
 
+    if 2 not in applied:
+        proposal_file_columns = (
+            ('applied_decisions_hash', 'TEXT'),
+            ('applied_commit_sha', 'TEXT'),
+            ('applied_at', 'TEXT'),
+        )
+        for column_name, column_type in proposal_file_columns:
+            if not _column_exists(conn, 'revision_proposal_files', column_name):
+                conn.execute(
+                    f'ALTER TABLE revision_proposal_files ADD COLUMN {column_name} {column_type}'
+                )
+        conn.execute(
+            'INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)',
+            (2, datetime.now(timezone.utc).isoformat())
+        )
+        conn.commit()
+
 
 def ensure_user(username):
     conn = get_db()

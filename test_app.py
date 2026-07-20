@@ -25,8 +25,17 @@ CLIENT = APP.test_client()
 def test_init_db():
     db = init_db()
     tables = [row['name'] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()]
-    for name in ('users', 'projects', 'file_versions', 'project_shares'):
+    for name in (
+        'users', 'projects', 'file_versions', 'project_shares',
+        'revision_proposals', 'revision_proposal_files', 'revision_proposal_decisions'
+    ):
         assert name in tables, f"{name} missing"
+    proposal_file_columns = {
+        row['name'] for row in db.execute('PRAGMA table_info(revision_proposal_files)').fetchall()
+    }
+    assert {'applied_decisions_hash', 'applied_commit_sha', 'applied_at'} <= proposal_file_columns
+    migrations = {row['version'] for row in db.execute('SELECT version FROM schema_migrations')}
+    assert {1, 2} <= migrations
     db.close()
     print("PASS: init_db")
 
@@ -80,9 +89,9 @@ def test_index_exposes_repo_actions():
     assert 'font-size-select' in html
     assert 'find-replace-bar' in html
     assert 'proposal-review' in html
-    assert 'js/app.js?v=20260720b' in html
-    assert 'js/proposals.js?v=20260720b' in html
-    assert 'js/projects.js?v=20260720d' in html
+    assert 'js/app.js?v=20260720c' in html
+    assert 'js/proposals.js?v=20260720c' in html
+    assert 'js/projects.js?v=20260720e' in html
     print("PASS: index_exposes_repo_actions")
 
 
@@ -90,13 +99,14 @@ def test_find_replace_js_helpers():
     if not shutil.which('node'):
         print("SKIP: find_replace_js_helpers (node not installed)")
         return
-    subprocess.run(
-        ['node', '--check', os.path.join(os.path.dirname(__file__), 'webapp/js/find-replace.js')],
-        check=True,
-        capture_output=True,
-        text=True
-    )
-    print("PASS: find_replace_js_helpers")
+    for filename in ('app.js', 'find-replace.js', 'projects.js', 'proposals.js'):
+        subprocess.run(
+            ['node', '--check', os.path.join(os.path.dirname(__file__), 'webapp/js', filename)],
+            check=True,
+            capture_output=True,
+            text=True
+        )
+    print("PASS: browser_js_syntax")
 
 
 def test_comments_js_helpers():

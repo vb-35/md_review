@@ -65,7 +65,7 @@ mcp = FastMCP(
     instructions=(
         'Work only through these tools. Read the current project and comments before editing. '
         'Submit edits as a pending revision proposal based on the exact currentCommitSha. '
-        'Never claim a proposal is published; a different human user must review every item and publish it.'
+        'Never claim proposed work is saved or its review is closed; an editor must review, save, and close it.'
     ),
     json_response=True,
 )

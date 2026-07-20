@@ -1419,7 +1419,8 @@ body.preview-justify-disabled .markdown-body ol {
   background: rgba(246, 211, 101, 0.14);
 }
 
-.proposal-status.accepted {
+.proposal-status.accepted,
+.proposal-status.closed {
   color: var(--green);
   background: rgba(127, 212, 166, 0.14);
 }
@@ -1428,6 +1429,13 @@ body.preview-justify-disabled .markdown-body ol {
 .proposal-status.stale {
   color: var(--red);
   background: rgba(242, 139, 130, 0.14);
+}
+
+.proposal-file-state {
+  margin-left: 8px;
+  color: var(--fg-dim);
+  font-size: 11px;
+  font-weight: 500;
 }
 
 .proposal-empty {

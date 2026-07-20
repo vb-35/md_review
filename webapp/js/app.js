@@ -292,6 +292,7 @@ const state = {
   comparedDiffBaselineContent: '',
   comparedDiffDecisions: {},
   lastAppliedDiffAction: null,
+  activeProposalReview: null,
   editing: false,
   showResolved: false,
   commentSort: 'activity-desc',
@@ -715,6 +716,7 @@ function resetEditorState() {
   state.comparedDiffBaselineContent = '';
   state.comparedDiffDecisions = {};
   state.lastAppliedDiffAction = null;
+  state.activeProposalReview = null;
   state.activeSidePanel = 'none';
   closePanels();
 }
@@ -869,11 +871,17 @@ function wireEvents() {
 
   $('#btn-save').addEventListener('click', async () => {
     if (!state.currentProject || !state.currentFile) return;
-    state.currentFile = await api('PUT', `/projects/${state.currentProject.id}/files/content`, {
+    const review = state.activeProposalReview;
+    const payload = {
       path: state.currentFile.filePath,
       content: window.App.editor.getValue(),
       baseCommitSha: state.currentFile.currentCommitSha
-    });
+    };
+    if (review && review.filePath === state.currentFile.filePath && review.needsSave) {
+      payload.proposalId = review.proposalId;
+    }
+    state.currentFile = await api('PUT', `/projects/${state.currentProject.id}/files/content`, payload);
+    state.activeProposalReview = null;
     state.editing = false;
     await window.App.projects.refreshProjectState(state.currentFile.filePath);
     window.App.preview.updatePreview();
@@ -882,6 +890,7 @@ function wireEvents() {
   $('#btn-lock').addEventListener('click', async () => {
     if (!state.currentProject || !canEditCurrentProject()) return;
     if (holdsCurrentLock()) {
+      if (state.editing && !window.confirm("Discard unsaved changes and release the project lock?")) return;
       await api('DELETE', `/projects/${state.currentProject.id}/lock`);
     } else {
       await api('POST', `/projects/${state.currentProject.id}/lock`);

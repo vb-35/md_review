@@ -2,7 +2,7 @@
   const App = root.App;
   const state = App.state;
   const $ = App.$;
-  const { capitalize, esc, formatDate } = App.helpers;
+  const { capitalize, esc, formatDate, holdsCurrentLock } = App.helpers;
 
   function statusLabel(status) {
     return capitalize(status || 'pending');
@@ -12,7 +12,8 @@
     return !!state.currentUser
       && !!state.currentProject
       && ['owner', 'editor'].includes(state.currentProject.accessRole)
-      && proposal.status === 'pending';
+      && proposal.status === 'pending'
+      && holdsCurrentLock();
   }
 
   function canDeleteProposal(proposal) {
@@ -141,8 +142,13 @@
         ${lineMeta ? `<span class="diff-line-meta">${esc(lineMeta)}</span>` : ''}
       </div>`;
     }).join('');
+    const stateLabel = file.applied
+      ? 'Saved after latest decisions'
+      : file.needsSave
+        ? file.decisionComplete ? 'Needs Save in editor' : 'Needs Save · decisions incomplete'
+        : 'Decisions incomplete';
     return `<section class="proposal-file">
-      <h4>${esc(file.filePath)}</h4>
+      <h4>${esc(file.filePath)} <span class="proposal-file-state">${esc(stateLabel)}</span></h4>
       <div class="proposal-diff">${lines || '<div class="proposal-empty">No reviewable changes.</div>'}</div>
     </section>`;
   }
@@ -189,6 +195,9 @@
       ? `<div class="proposal-notice danger">${esc(proposal.staleReason)} Ask Codex to regenerate from the current project.</div>`
       : '';
     const progress = `${proposal.review.decided} of ${proposal.review.required} items decided`;
+    const lockNotice = proposal.status === 'pending' && !holdsCurrentLock()
+      ? '<div class="proposal-notice">Take the project lock to change decisions or close this review.</div>'
+      : '';
     review.innerHTML = `
       <div class="proposal-review-header">
         <button type="button" id="btn-close-proposal">Back to proposals</button>
@@ -203,6 +212,7 @@
         <strong>${esc(progress)}</strong>
       </div>
       ${staleNotice}
+      ${lockNotice}
       ${reviewerEnabled ? `<div class="proposal-bulk-actions">
         <button type="button" data-bulk-decision="accept">Accept all</button>
         <button type="button" data-bulk-decision="refuse">Refuse all</button>
@@ -217,11 +227,13 @@
       ${reviewerEnabled || deleteEnabled ? `<div class="proposal-publish-actions">
         ${reviewerEnabled ? '<button type="button" id="btn-reject-proposal" class="danger">Reject proposal</button>' : ''}
         ${deleteEnabled ? '<button type="button" id="btn-delete-proposal" class="danger">Delete proposal</button>' : ''}
-        ${reviewerEnabled ? `<button type="button" id="btn-publish-proposal" class="primary"${proposal.review.canPublish ? '' : ' disabled'}>Publish accepted changes</button>` : ''}
+        ${reviewerEnabled ? `<button type="button" id="btn-close-proposal-review" class="primary"${proposal.review.canClose ? '' : ' disabled'}>Close review</button>` : ''}
       </div>` : ''}
-      ${proposal.status === 'accepted' && proposal.appliedCommitSha
-        ? `<div class="proposal-notice success">Published as commit ${esc(proposal.appliedCommitSha.slice(0, 10))} by ${esc(proposal.reviewerUsername || 'reviewer')}.</div>`
-        : ''}
+      ${proposal.status === 'closed'
+        ? `<div class="proposal-notice success">Review closed by ${esc(proposal.reviewerUsername || 'reviewer')}. Saved file versions remain in project history.</div>`
+        : proposal.status === 'accepted' && proposal.appliedCommitSha
+          ? `<div class="proposal-notice success">Published as commit ${esc(proposal.appliedCommitSha.slice(0, 10))} by ${esc(proposal.reviewerUsername || 'reviewer')}.</div>`
+          : ''}
     `;
     bindProposalDetailEvents();
   }
@@ -244,8 +256,8 @@
         button.dataset.bulkDecision
       )));
     });
-    const publish = $('#btn-publish-proposal');
-    if (publish) publish.addEventListener('click', publishProposal);
+    const close = $('#btn-close-proposal-review');
+    if (close) close.addEventListener('click', closeProposalReview);
     const reject = $('#btn-reject-proposal');
     if (reject) reject.addEventListener('click', rejectProposal);
     const remove = $('#btn-delete-proposal');
@@ -260,6 +272,7 @@
         `/projects/${state.currentProject.id}/proposals/${state.currentProposal.id}/decisions`,
         { items }
       );
+      await App.projects.refreshActiveProposalReview(state.currentProposal);
       renderProposalDetail();
     } catch (error) {
       alert(error.message);
@@ -267,19 +280,19 @@
     }
   }
 
-  async function publishProposal() {
-    if (!window.confirm('Publish every accepted item as one new project version?')) return;
+  async function closeProposalReview() {
+    if (!window.confirm('Close this review and apply every accepted comment action? Saved file versions will not be changed.')) return;
     try {
       state.currentProposal = await App.api(
         'POST',
-        `/projects/${state.currentProject.id}/proposals/${state.currentProposal.id}/publish`
+        `/projects/${state.currentProject.id}/proposals/${state.currentProposal.id}/close`
       );
       await App.projects.refreshProjectState();
       await loadProposals(false);
-      const accepted = state.proposals.find((item) => item.id === state.currentProposal.id);
-      if (accepted) state.currentProposal = await App.api(
+      const closed = state.proposals.find((item) => item.id === state.currentProposal.id);
+      if (closed) state.currentProposal = await App.api(
         'GET',
-        `/projects/${state.currentProject.id}/proposals/${accepted.id}`
+        `/projects/${state.currentProject.id}/proposals/${closed.id}`
       );
       renderProposalList();
     } catch (error) {
@@ -290,7 +303,7 @@
 
   async function deleteProposal() {
     const proposal = state.currentProposal;
-    if (!proposal || !window.confirm('Delete this unpublished proposal permanently? Live project files will not be changed.')) return;
+    if (!proposal || !window.confirm('Delete this proposal record permanently? Saved project files and versions will not be changed.')) return;
     try {
       await App.api(
         'DELETE',
