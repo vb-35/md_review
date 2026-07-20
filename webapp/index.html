@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MD Review</title>
-  <link rel="stylesheet" href="css/style.css?v=20260709e">
+  <link rel="stylesheet" href="css/style.css?v=20260717a">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link id="highlight-theme" rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css">
 </head>
@@ -143,6 +143,18 @@
               <div id="project-files" class="share-list"></div>
             </div>
 
+            <div class="detail-card proposal-card">
+              <div class="share-card-header">
+                <div>
+                  <h3>Revision proposals</h3>
+                  <span>Review Codex changes before they become a project version</span>
+                </div>
+                <button id="btn-refresh-proposals" type="button">Refresh</button>
+              </div>
+              <div id="proposal-list"></div>
+              <div id="proposal-review" class="hidden"></div>
+            </div>
+
             <div id="share-card" class="detail-card hidden">
               <div class="share-card-header">
                 <h3>Sharing</h3>
@@ -263,13 +275,14 @@
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/javascript.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/python.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/bash.min.js"></script>
-  <script src="js/scientific-preview.js?v=20260709e"></script>
-  <script src="js/app.js?v=20260709e"></script>
-  <script src="js/find-replace.js?v=20260709e"></script>
-  <script src="js/preview.js?v=20260709e"></script>
-  <script src="js/comments.js?v=20260709e"></script>
-  <script src="js/projects.js?v=20260709e"></script>
-  <script type="module" src="js/editor.js?v=20260709e"></script>
+  <script src="js/scientific-preview.js?v=20260717a"></script>
+  <script src="js/app.js?v=20260717a"></script>
+  <script src="js/find-replace.js?v=20260717a"></script>
+  <script src="js/preview.js?v=20260717a"></script>
+  <script src="js/comments.js?v=20260717a"></script>
+  <script src="js/proposals.js?v=20260717a"></script>
+  <script src="js/projects.js?v=20260717a"></script>
+  <script type="module" src="js/editor.js?v=20260717a"></script>
   <script>
     Promise.race([
       window.App.editorReady,

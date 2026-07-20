@@ -6,7 +6,6 @@ from flask import Blueprint, jsonify, request, session
 from models import get_db, get_project_for_user, user_can_edit_project
 from utils.diff import apply_diff_decisions, compute_diff
 from utils.repo_storage import (
-    get_project_head_commit,
     git_commit_paths,
     load_applicable_comment_stores,
     load_comment_store,
@@ -22,6 +21,52 @@ from utils.repo_storage import (
 
 
 review_bp = Blueprint('review', __name__)
+PROPOSAL_VERSION_PREFIX = 'proposal:'
+
+
+def proposal_version_id(proposal_id):
+    return f'{PROPOSAL_VERSION_PREFIX}{proposal_id}'
+
+
+def load_version_candidate(conn, project_id, file_path, version_id):
+    if version_id.startswith(PROPOSAL_VERSION_PREFIX):
+        proposal_id = version_id[len(PROPOSAL_VERSION_PREFIX):]
+        row = conn.execute(
+            "SELECT rp.id AS proposal_id, rp.project_id, rpf.file_path, "
+            "rpf.base_content, rpf.proposed_content AS content, rp.title AS message, rp.author_id, "
+            "rp.created_at, rp.status, rp.base_commit_sha, u.username AS author_name "
+            "FROM revision_proposals rp "
+            "JOIN revision_proposal_files rpf ON rpf.proposal_id = rp.id "
+            "JOIN users u ON u.id = rp.author_id "
+            "WHERE rp.id = ? AND rp.project_id = ? AND rpf.file_path = ?",
+            (proposal_id, project_id, file_path)
+        ).fetchone()
+        if not row or row['status'] != 'pending':
+            return None
+        candidate = dict(row)
+        candidate.update({
+            'id': version_id,
+            'version': None,
+            'kind': 'proposal',
+        })
+        return candidate
+
+    row = conn.execute(
+        "SELECT fv.*, u.username AS author_name FROM file_versions fv "
+        "JOIN users u ON u.id = fv.author_id "
+        "WHERE fv.id = ? AND fv.project_id = ? AND fv.file_path = ?",
+        (version_id, project_id, file_path)
+    ).fetchone()
+    if not row:
+        return None
+    candidate = dict(row)
+    candidate.update({
+        'kind': 'published',
+        'status': 'published',
+        'proposal_id': None,
+        'base_commit_sha': None,
+    })
+    return candidate
 
 
 def require_auth(f):
@@ -155,8 +200,10 @@ def list_versions(project_id):
         file_path = normalize_project_file_path(request.args.get('path', ''))
     except ValueError as exc:
         return jsonify({'error': str(exc)}), 400
-    rows = get_db().execute(
-        "SELECT fv.id, fv.project_id, fv.file_path, fv.version, fv.message, "
+
+    conn = get_db()
+    published_rows = conn.execute(
+        "SELECT fv.id, fv.project_id, fv.file_path, fv.version, fv.content, fv.message, "
         "fv.author_id, fv.created_at, u.username AS author_name "
         "FROM file_versions fv "
         "JOIN users u ON fv.author_id = u.id "
@@ -164,13 +211,94 @@ def list_versions(project_id):
         "ORDER BY fv.version DESC",
         (project_id, file_path)
     ).fetchall()
-    return jsonify([dict(row) for row in rows])
+    published = []
+    published_content_ids = {}
+    for row in published_rows:
+        item = dict(row)
+        published_content_ids.setdefault(item.pop('content'), item['id'])
+        item.update({'kind': 'published', 'status': 'published', 'proposalId': None})
+        published.append(item)
+
+    proposal_rows = conn.execute(
+        "SELECT rp.id AS proposal_id, rp.project_id, rpf.file_path, rpf.base_content, "
+        "rp.title AS message, rp.author_id, rp.created_at, rp.status, "
+        "rp.base_commit_sha, u.username AS author_name "
+        "FROM revision_proposals rp "
+        "JOIN revision_proposal_files rpf ON rpf.proposal_id = rp.id "
+        "JOIN users u ON u.id = rp.author_id "
+        "WHERE rp.project_id = ? AND rpf.file_path = ? AND rp.status = 'pending' "
+        "ORDER BY rp.created_at DESC",
+        (project_id, file_path)
+    ).fetchall()
+    project = get_project_for_user(project_id, session['user_id'])
+    project_root = resolve_project_root(project['project_path'])
+    from routes.proposals import proposal_row, refresh_stale_status
+
+    proposals = []
+    for row in proposal_rows:
+        current = proposal_row(row['proposal_id'], project_id)
+        current = refresh_stale_status(current, project_root)
+        if current['status'] != 'pending':
+            continue
+        item = dict(row)
+        base_content = item.pop('base_content')
+        item.update({
+            'id': proposal_version_id(row['proposal_id']),
+            'version': None,
+            'kind': 'proposal',
+            'proposalId': row['proposal_id'],
+            'baseVersionId': published_content_ids.get(base_content),
+        })
+        proposals.append(item)
+    return jsonify(proposals + published)
+
+
+@review_bp.route('/projects/<project_id>/files/versions/<path:version_id>', methods=['GET'])
+@require_auth
+def get_version(project_id, version_id):
+    access_error = require_project_access(project_id, session['user_id'])
+    if access_error:
+        return access_error
+    file_path = request.args.get('path', '')
+    if version_id.startswith(PROPOSAL_VERSION_PREFIX):
+        try:
+            file_path = normalize_project_file_path(file_path)
+        except ValueError as exc:
+            return jsonify({'error': str(exc)}), 400
+        row = load_version_candidate(get_db(), project_id, file_path, version_id)
+        if row:
+            project = get_project_for_user(project_id, session['user_id'])
+            from routes.proposals import proposal_row, refresh_stale_status
+            current = refresh_stale_status(
+                proposal_row(row['proposal_id'], project_id),
+                resolve_project_root(project['project_path']),
+            )
+            if current['status'] != 'pending':
+                row = None
+    else:
+        row = get_db().execute(
+            "SELECT fv.id, fv.project_id, fv.file_path, fv.version, fv.content, fv.message, "
+            "fv.author_id, fv.created_at, u.username AS author_name "
+            "FROM file_versions fv JOIN users u ON u.id = fv.author_id "
+            "WHERE fv.id = ? AND fv.project_id = ?",
+            (version_id, project_id)
+        ).fetchone()
+        row = dict(row) if row else None
+        if row:
+            row.update({'kind': 'published', 'status': 'published', 'proposalId': None})
+    if not row:
+        return jsonify({'error': 'Version not found'}), 404
+    if row.get('kind') == 'proposal':
+        row['proposalId'] = row.pop('proposal_id')
+        row['baseCommitSha'] = row.pop('base_commit_sha')
+    return jsonify(row)
 
 
 @review_bp.route('/projects/<project_id>/files/compare', methods=['POST'])
 @require_auth
 def compare_versions(project_id):
-    access_error = require_project_access(project_id, session['user_id'])
+    uid = session['user_id']
+    access_error = require_project_access(project_id, uid)
     if access_error:
         return access_error
 
@@ -185,18 +313,38 @@ def compare_versions(project_id):
         return jsonify({'error': 'versionA and versionB required'}), 400
 
     conn = get_db()
-    va = conn.execute(
-        "SELECT * FROM file_versions WHERE id = ? AND project_id = ? AND file_path = ?",
-        (version_a, project_id, file_path)
-    ).fetchone()
-    vb = conn.execute(
-        "SELECT * FROM file_versions WHERE id = ? AND project_id = ? AND file_path = ?",
-        (version_b, project_id, file_path)
-    ).fetchone()
+    va = load_version_candidate(conn, project_id, file_path, version_a)
+    vb = load_version_candidate(conn, project_id, file_path, version_b)
     if not va or not vb:
         return jsonify({'error': 'Version not found'}), 404
+    if va['kind'] == 'proposal':
+        return jsonify({'error': 'A proposal can only be compared as the candidate version'}), 400
 
+    proposal = vb if vb['kind'] == 'proposal' else None
+    if proposal:
+        project = get_project_for_user(project_id, uid)
+        from routes.proposals import proposal_row, refresh_stale_status
+        current = refresh_stale_status(
+            proposal_row(proposal['proposal_id'], project_id),
+            resolve_project_root(project['project_path']),
+        )
+        if current['status'] != 'pending':
+            return jsonify({'error': f"Proposal is {current['status']}", 'code': current['status']}), 409
+
+    proposal_base_matches = bool(proposal and va['content'] == proposal['base_content'])
     diff_rows = compute_diff(va['content'], vb['content'])
+    decisions = {}
+    if proposal_base_matches:
+        decisions = {
+            row['item_id']: row['decision']
+            for row in conn.execute(
+                "SELECT item_id, decision FROM revision_proposal_decisions "
+                "WHERE proposal_id = ? AND item_kind = 'diff' AND file_path = ?",
+                (proposal['proposal_id'], file_path)
+            ).fetchall()
+        }
+    label_a = f"v{va['version']}" if va['kind'] == 'published' else 'Proposed version'
+    label_b = f"v{vb['version']}" if vb['kind'] == 'published' else f"Proposed by {vb['author_name']}"
     return jsonify({
         'diff': diff_rows,
         'projectId': project_id,
@@ -207,6 +355,18 @@ def compare_versions(project_id):
         'versionBId': vb['id'],
         'createdAtA': va['created_at'],
         'createdAtB': vb['created_at'],
+        'labelA': label_a,
+        'labelB': label_b,
+        'proposalId': proposal['proposal_id'] if proposal else None,
+        'proposalAuthorId': proposal['author_id'] if proposal else None,
+        'proposalAuthorUsername': proposal['author_name'] if proposal else None,
+        'proposalDecisions': decisions,
+        'proposalBaseMatches': proposal_base_matches if proposal else None,
+        'reviewerCanDecide': bool(
+            proposal_base_matches
+            and proposal['author_id'] != uid
+            and user_can_edit_project(project_id, uid)
+        ),
     })
 
 

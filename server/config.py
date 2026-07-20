@@ -11,3 +11,4 @@ class Config:
     REPO_ROOT = os.environ.get('REPO_ROOT', '').strip()
     PROJECTS_DIR = os.environ.get('PROJECTS_DIR', '.md-review/projects').strip() or '.md-review/projects'
     COMMENTS_DIR = os.environ.get('COMMENTS_DIR', '.md-review/comments').strip() or '.md-review/comments'
+    PROJECT_LOCK_TTL_SECONDS = int(os.environ.get('PROJECT_LOCK_TTL_SECONDS', '300'))

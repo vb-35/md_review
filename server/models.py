@@ -1,6 +1,6 @@
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from flask import g
 
 _db_instance = None
@@ -78,8 +78,89 @@ def init_db():
         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
         FOREIGN KEY (shared_by) REFERENCES users(id)
     );
+
+    CREATE TABLE IF NOT EXISTS schema_migrations (
+        version INTEGER PRIMARY KEY,
+        applied_at TEXT NOT NULL
+    );
     """)
+    apply_migrations(conn)
     return conn
+
+
+def _column_exists(conn, table_name, column_name):
+    return any(row['name'] == column_name for row in conn.execute(f'PRAGMA table_info({table_name})'))
+
+
+def apply_migrations(conn):
+    applied = {row['version'] for row in conn.execute('SELECT version FROM schema_migrations')}
+    if 1 not in applied:
+        if not _column_exists(conn, 'projects', 'lock_expires_at'):
+            conn.execute('ALTER TABLE projects ADD COLUMN lock_expires_at TEXT')
+        conn.executescript("""
+        CREATE TABLE IF NOT EXISTS revision_proposals (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            author_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            summary TEXT NOT NULL DEFAULT '',
+            base_commit_sha TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            stale_reason TEXT,
+            created_at TEXT NOT NULL,
+            decided_by TEXT,
+            decided_at TEXT,
+            applied_commit_sha TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+            FOREIGN KEY (author_id) REFERENCES users(id),
+            FOREIGN KEY (decided_by) REFERENCES users(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS revision_proposal_files (
+            proposal_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            base_content TEXT NOT NULL,
+            proposed_content TEXT NOT NULL,
+            PRIMARY KEY (proposal_id, file_path),
+            FOREIGN KEY (proposal_id) REFERENCES revision_proposals(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS revision_proposal_comment_actions (
+            id TEXT PRIMARY KEY,
+            proposal_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            file_path TEXT NOT NULL,
+            source_commit_sha TEXT NOT NULL,
+            source_fingerprint TEXT NOT NULL,
+            action_type TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            FOREIGN KEY (proposal_id) REFERENCES revision_proposals(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS revision_proposal_decisions (
+            proposal_id TEXT NOT NULL,
+            item_kind TEXT NOT NULL,
+            file_path TEXT NOT NULL DEFAULT '',
+            item_id TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            reviewer_id TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (proposal_id, item_kind, file_path, item_id),
+            FOREIGN KEY (proposal_id) REFERENCES revision_proposals(id) ON DELETE CASCADE,
+            FOREIGN KEY (reviewer_id) REFERENCES users(id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_revision_proposals_project_status
+            ON revision_proposals(project_id, status, created_at);
+        """)
+        conn.execute(
+            'UPDATE projects SET lock_owner_id = NULL, locked_at = NULL, lock_expires_at = NULL'
+        )
+        conn.execute(
+            'INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)',
+            (1, datetime.now(timezone.utc).isoformat())
+        )
+        conn.commit()
 
 
 def ensure_user(username):
@@ -127,6 +208,11 @@ def get_project_for_user(project_id, user_id):
         return None
 
     project = dict(project_row)
+    if project_lock_is_expired(project):
+        project['lock_owner_id'] = None
+        project['lock_owner_username'] = None
+        project['locked_at'] = None
+        project['lock_expires_at'] = None
     if project['owner_id'] == user_id:
         project['access_role'] = 'owner'
         project['is_owner'] = 1
@@ -153,6 +239,71 @@ def get_project_for_user(project_id, user_id):
 def user_can_edit_project(project_id, user_id):
     row = get_project_for_user(project_id, user_id)
     return row is not None and row['access_role'] in ('owner', 'editor')
+
+
+def parse_timestamp(value):
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def project_lock_is_expired(project, now=None):
+    if not project or not project.get('lock_owner_id'):
+        return False
+    expires_at = parse_timestamp(project.get('lock_expires_at'))
+    if expires_at is None:
+        return True
+    return expires_at <= (now or datetime.now(timezone.utc))
+
+
+def acquire_project_lock(project_id, user_id, ttl_seconds=None):
+    from config import Config
+
+    ttl = int(ttl_seconds or Config.PROJECT_LOCK_TTL_SECONDS)
+    now_dt = datetime.now(timezone.utc)
+    now = now_dt.isoformat()
+    expires_at = (now_dt + timedelta(seconds=ttl)).isoformat()
+    conn = get_db()
+    conn.execute('BEGIN IMMEDIATE')
+    row = conn.execute(
+        'SELECT lock_owner_id, locked_at, lock_expires_at FROM projects WHERE id = ?',
+        (project_id,)
+    ).fetchone()
+    if not row:
+        conn.rollback()
+        return None, 'not_found'
+    current = dict(row)
+    if current['lock_owner_id'] not in (None, user_id) and not project_lock_is_expired(current, now_dt):
+        conn.rollback()
+        return current, 'locked'
+    conn.execute(
+        'UPDATE projects SET lock_owner_id = ?, locked_at = ?, lock_expires_at = ? WHERE id = ?',
+        (user_id, now, expires_at, project_id)
+    )
+    conn.commit()
+    return {
+        'lock_owner_id': user_id,
+        'locked_at': now,
+        'lock_expires_at': expires_at,
+    }, None
+
+
+def refresh_project_lock(project_id, user_id, ttl_seconds=None):
+    return acquire_project_lock(project_id, user_id, ttl_seconds)
+
+
+def release_project_lock(project_id, user_id):
+    conn = get_db()
+    cursor = conn.execute(
+        'UPDATE projects SET lock_owner_id = NULL, locked_at = NULL, lock_expires_at = NULL '
+        'WHERE id = ? AND lock_owner_id = ?',
+        (project_id, user_id)
+    )
+    conn.commit()
+    return cursor.rowcount == 1
 
 
 def row_to_dict(row):

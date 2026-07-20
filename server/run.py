@@ -33,10 +33,12 @@ def create_app():
     from routes.auth import auth_bp
     from routes.projects import project_bp
     from routes.review import review_bp
+    from routes.proposals import proposal_bp
     api_prefix = f'{base_path}/api'
     app.register_blueprint(auth_bp, url_prefix=f'{api_prefix}/auth')
     app.register_blueprint(project_bp, url_prefix=api_prefix)
     app.register_blueprint(review_bp, url_prefix=api_prefix)
+    app.register_blueprint(proposal_bp, url_prefix=api_prefix)
 
     @app.route(f'{base_path}/')
     def index():

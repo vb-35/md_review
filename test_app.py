@@ -78,6 +78,8 @@ def test_index_exposes_repo_actions():
     assert 'replace-shortcut-select' in html
     assert 'font-size-select' in html
     assert 'find-replace-bar' in html
+    assert 'proposal-review' in html
+    assert 'js/proposals.js' in html
     print("PASS: index_exposes_repo_actions")
 
 

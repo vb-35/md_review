@@ -7,7 +7,13 @@ from urllib.parse import quote
 
 from flask import Blueprint, after_this_request, current_app, jsonify, request, send_file, session
 
-from models import get_db, get_project_for_user
+from models import (
+    acquire_project_lock,
+    get_db,
+    get_project_for_user,
+    refresh_project_lock,
+    release_project_lock,
+)
 from utils.repo_storage import (
     build_project_archive,
     default_project_path,
@@ -99,6 +105,7 @@ def project_to_api(project):
         'lockOwnerId': project.get('lock_owner_id'),
         'lockOwnerUsername': project.get('lock_owner_username'),
         'lockedAt': project.get('locked_at'),
+        'lockExpiresAt': project.get('lock_expires_at'),
         'accessRole': project.get('access_role'),
         'isOwner': bool(project.get('is_owner')),
         'sharedByUsername': project.get('shared_by_username'),
@@ -567,6 +574,17 @@ def rename_file(project_id):
     return jsonify({'ok': True, 'currentCommitSha': head})
 
 
+def lock_conflict_response(project_id, uid):
+    current = get_project_for_user(project_id, uid)
+    return jsonify({
+        'error': 'Project is locked by another user',
+        'code': 'project_locked',
+        'lockOwnerId': current.get('lock_owner_id') if current else None,
+        'lockOwnerUsername': current.get('lock_owner_username') if current else None,
+        'lockExpiresAt': current.get('lock_expires_at') if current else None,
+    }), 423
+
+
 @project_bp.route('/projects/<project_id>/lock', methods=['POST'])
 @require_auth
 def lock_project(project_id):
@@ -577,16 +595,27 @@ def lock_project(project_id):
     permission_error = require_edit_access(row)
     if permission_error:
         return permission_error
-    now = datetime.now(timezone.utc).isoformat()
-    conn = get_db()
-    cursor = conn.execute(
-        "UPDATE projects SET lock_owner_id = ?, locked_at = ? WHERE id = ? AND (lock_owner_id IS NULL OR lock_owner_id = ?)",
-        (uid, now, project_id, uid),
-    )
-    if cursor.rowcount != 1:
-        conn.rollback()
-        return jsonify({'error': 'Project is locked by another user'}), 423
-    conn.commit()
+    _, lock_error = acquire_project_lock(project_id, uid)
+    if lock_error:
+        return lock_conflict_response(project_id, uid)
+    return jsonify(project_to_api(get_project_for_user(project_id, uid)))
+
+
+@project_bp.route('/projects/<project_id>/lock/heartbeat', methods=['POST'])
+@require_auth
+def heartbeat_project_lock(project_id):
+    uid = session['user_id']
+    row, error = get_accessible_project_or_404(project_id, uid)
+    if error:
+        return error
+    permission_error = require_edit_access(row)
+    if permission_error:
+        return permission_error
+    if row.get('lock_owner_id') != uid:
+        return jsonify({'error': 'You do not own this lock'}), 423
+    _, lock_error = refresh_project_lock(project_id, uid)
+    if lock_error:
+        return lock_conflict_response(project_id, uid)
     return jsonify(project_to_api(get_project_for_user(project_id, uid)))
 
 
@@ -600,15 +629,10 @@ def unlock_project(project_id):
     permission_error = require_edit_access(row)
     if permission_error:
         return permission_error
-    conn = get_db()
-    cursor = conn.execute(
-        "UPDATE projects SET lock_owner_id = NULL, locked_at = NULL WHERE id = ? AND (lock_owner_id = ? OR lock_owner_id IS NULL)",
-        (project_id, uid),
-    )
-    if cursor.rowcount != 1:
-        conn.rollback()
+    if row.get('lock_owner_id') not in (None, uid):
         return jsonify({'error': 'You do not own this lock'}), 403
-    conn.commit()
+    if row.get('lock_owner_id') == uid:
+        release_project_lock(project_id, uid)
     return jsonify({'ok': True})
 
 

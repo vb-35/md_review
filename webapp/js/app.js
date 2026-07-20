@@ -302,6 +302,10 @@ const state = {
   settings: loadSettings(),
   activeSidePanel: 'none',
   sidePanelResize: null,
+  lockHeartbeatTimer: null,
+  lockHeartbeatProjectId: null,
+  proposals: [],
+  currentProposal: null,
   syncingScroll: false,
   suspendEditorChangeTracking: false,
   initialized: false
@@ -602,6 +606,7 @@ function updateHeader() {
     $('#btn-review').disabled = true;
     $('#btn-threads').disabled = true;
     $('#btn-menu').textContent = 'Projects';
+    syncLockHeartbeat();
     return;
   }
 
@@ -622,6 +627,7 @@ function updateHeader() {
   $('#btn-review').disabled = !state.currentFile;
   $('#btn-threads').disabled = !state.currentFile;
   $('#btn-menu').textContent = state.currentView === 'editor' ? 'Back to Projects' : 'Projects';
+  syncLockHeartbeat();
 }
 
 function updateEditorPermissions() {
@@ -646,6 +652,42 @@ function updateEditorPermissions() {
   if (window.App.findReplace && window.App.findReplace.refreshMatches) {
     window.App.findReplace.refreshMatches();
   }
+}
+
+function stopLockHeartbeat() {
+  if (state.lockHeartbeatTimer) clearInterval(state.lockHeartbeatTimer);
+  state.lockHeartbeatTimer = null;
+  state.lockHeartbeatProjectId = null;
+}
+
+function syncLockHeartbeat() {
+  const projectId = state.currentProject && state.currentProject.id;
+  const shouldRun = !!projectId && holdsCurrentLock();
+  if (!shouldRun) {
+    stopLockHeartbeat();
+    return;
+  }
+  if (state.lockHeartbeatTimer && state.lockHeartbeatProjectId === projectId) return;
+  stopLockHeartbeat();
+  state.lockHeartbeatProjectId = projectId;
+  state.lockHeartbeatTimer = setInterval(async () => {
+    if (!state.currentProject || state.currentProject.id !== projectId || !holdsCurrentLock()) {
+      stopLockHeartbeat();
+      return;
+    }
+    try {
+      const project = await api('POST', `/projects/${projectId}/lock/heartbeat`);
+      if (state.currentProject && state.currentProject.id === projectId) {
+        state.currentProject = project;
+        updateHeader();
+      }
+    } catch {
+      stopLockHeartbeat();
+      if (state.currentProject && state.currentProject.id === projectId && window.App.projects.refreshProjectState) {
+        await window.App.projects.refreshProjectState(state.currentFile ? state.currentFile.filePath : null);
+      }
+    }
+  }, 60000);
 }
 
 function resetEditorState() {
@@ -719,6 +761,7 @@ window.App = {
   },
   preview: {},
   comments: {},
+  proposals: {},
   projects: {}
 };
 
@@ -751,6 +794,7 @@ function wireEvents() {
     clearStoredIdentifier();
     state.currentUser = null;
     state.currentProject = null;
+    stopLockHeartbeat();
     resetEditorState();
     showLoginScreen();
   });
@@ -872,6 +916,7 @@ function wireEvents() {
 
   $('#version-select-head').addEventListener('change', (event) => {
     state.selectedHeadId = event.target.value;
+    window.App.projects.syncProposalBase(state.selectedHeadId);
   });
 
   $('#btn-compare').addEventListener('click', window.App.projects.compareSelectedVersions);

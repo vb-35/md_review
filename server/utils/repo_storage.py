@@ -252,6 +252,17 @@ def git_commit_paths(project_root, paths, message):
     return get_project_head_commit(project_root)
 
 
+def reset_project_to_commit(project_root, commit_sha):
+    canonical = normalize_project_commit(project_root, commit_sha)
+    subprocess.run(
+        ['git', '-C', str(Path(project_root).resolve()), 'reset', '--hard', canonical],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return canonical
+
+
 def get_comments_root(project_root):
     project_root = Path(project_root).resolve()
     comments_root = (project_root / '.md-review' / 'comments').resolve()

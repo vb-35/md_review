@@ -51,7 +51,11 @@
     state.projectFiles = (await App.api('GET', `/projects/${projectId}/files`)).items;
     state.projectShares = canManageShares() ? await App.api('GET', `/projects/${projectId}/shares`) : [];
     state.currentFile = null;
+    state.currentProposal = null;
     state.editing = false;
+    if (App.proposals && App.proposals.loadProposals) {
+      await App.proposals.loadProposals(false);
+    }
     if (App.comments && App.comments.syncAnchoredDraftFromStorage) {
       App.comments.syncAnchoredDraftFromStorage();
     }
@@ -108,6 +112,9 @@
 
     $('#share-card').classList.toggle('hidden', !canManageShares());
     renderShares();
+    if (App.proposals && App.proposals.renderProposalList) {
+      App.proposals.renderProposalList();
+    }
   }
 
   function downloadProjectRepo() {
@@ -185,6 +192,9 @@
     if (canManageShares()) {
       state.projectShares = await App.api('GET', `/projects/${state.currentProject.id}/shares`);
     }
+    if (App.proposals && App.proposals.loadProposals) {
+      await App.proposals.loadProposals(false);
+    }
     renderProjectDetail();
     updateHeader();
     if (nextCurrentFilePath === '') {
@@ -221,6 +231,7 @@
     $('#diff-view').innerHTML = '';
     $('#diff-meta').textContent = '';
     $('#version-diff-actions').classList.add('hidden');
+    $('#btn-revert').classList.remove('hidden');
     App.preview.updatePreview();
     if (App.comments && App.comments.syncAnchoredDraftFromStorage) {
       App.comments.syncAnchoredDraftFromStorage();
@@ -238,6 +249,9 @@
   }
 
   function canApplyDiffChunks() {
+    if (state.comparedDiff && state.comparedDiff.proposalId) {
+      return !!state.comparedDiff.reviewerCanDecide;
+    }
     return canEditCurrentProject() && holdsCurrentLock();
   }
 
@@ -298,25 +312,46 @@
     });
   }
 
+  function versionOption(version) {
+    const label = version.kind === 'proposal'
+      ? `Proposed · ${version.author_name} · ${version.message || 'Untitled revision'} · ${formatDate(version.created_at)}`
+      : `v${version.version} · ${version.author_name} · ${formatDate(version.created_at)}`;
+    return `<option value="${esc(version.id)}">${esc(label)}</option>`;
+  }
+
   async function loadVersions() {
     if (!state.currentFile) return;
     state.versions = await App.api('GET', `/projects/${state.currentProject.id}/files/versions?path=${encodeURIComponent(state.currentFile.filePath)}`);
     const baseSelect = $('#version-select-base');
     const headSelect = $('#version-select-head');
-    const options = state.versions.map((version) => `
-      <option value="${version.id}">v${version.version} · ${esc(version.author_name)} · ${esc(formatDate(version.created_at))}</option>
-    `).join('');
-    baseSelect.innerHTML = options;
-    headSelect.innerHTML = options;
-    if (state.versions[1]) {
-      state.selectedBaseId = state.versions[1].id;
-      state.selectedHeadId = state.versions[0].id;
-    } else if (state.versions[0]) {
-      state.selectedBaseId = state.versions[0].id;
-      state.selectedHeadId = state.versions[0].id;
+    const published = state.versions.filter((version) => version.kind !== 'proposal');
+    const proposals = state.versions.filter((version) => version.kind === 'proposal');
+    baseSelect.innerHTML = published.map(versionOption).join('');
+    headSelect.innerHTML = [...proposals, ...published].map(versionOption).join('');
+
+    if (proposals.length) {
+      state.selectedBaseId = proposals[0].baseVersionId || (published[0] ? published[0].id : null);
+      state.selectedHeadId = proposals[0].id;
+    } else if (published[1]) {
+      state.selectedBaseId = published[1].id;
+      state.selectedHeadId = published[0].id;
+    } else if (published[0]) {
+      state.selectedBaseId = published[0].id;
+      state.selectedHeadId = published[0].id;
+    } else {
+      state.selectedBaseId = null;
+      state.selectedHeadId = null;
     }
     baseSelect.value = state.selectedBaseId || '';
     headSelect.value = state.selectedHeadId || '';
+  }
+
+
+  function syncProposalBase(versionId) {
+    const version = state.versions.find((item) => item.id === versionId);
+    if (!version || version.kind !== 'proposal' || !version.baseVersionId) return;
+    state.selectedBaseId = version.baseVersionId;
+    $('#version-select-base').value = version.baseVersionId;
   }
 
   async function compareSelectedVersions() {
@@ -328,10 +363,14 @@
     });
     state.comparedDiff = result;
     state.comparedDiffBaselineContent = App.editor.getValue();
-    state.comparedDiffDecisions = {};
+    state.comparedDiffDecisions = result.proposalDecisions || {};
     state.lastAppliedDiffAction = null;
     renderDiff(result.diff);
-    $('#diff-meta').textContent = `v${result.versionA} -> v${result.versionB}`;
+    const reviewHint = result.proposalId && !result.proposalBaseMatches
+      ? ' · comparison only; select the proposal base to review'
+      : '';
+    $('#diff-meta').textContent = `${result.labelA} → ${result.labelB}${reviewHint}`;
+    $('#btn-revert').classList.toggle('hidden', !!result.proposalId);
     $('#version-diff-actions').classList.remove('hidden');
   }
 
@@ -341,15 +380,41 @@
       alert('Edit access required.');
       return;
     }
+
+    const key = decisionKey(rowId, chunkId);
+    const nextDecisions = {
+      ...state.comparedDiffDecisions,
+      [key]: decision,
+    };
+
+    if (state.comparedDiff.proposalId) {
+      if (!state.comparedDiff.reviewerCanDecide) {
+        alert('A different editor must review this proposed version.');
+        return;
+      }
+      const result = await App.api(
+        'PUT',
+        `/projects/${state.currentProject.id}/proposals/${state.comparedDiff.proposalId}/decisions`,
+        { items: [{
+          kind: 'diff',
+          filePath: state.currentFile.filePath,
+          itemId: key,
+          decision,
+        }] }
+      );
+      state.comparedDiffDecisions = nextDecisions;
+      state.lastAppliedDiffAction = { rowId, chunkId, decision };
+      if (state.currentProposal && state.currentProposal.id === result.id) {
+        state.currentProposal = result;
+      }
+      renderDiff(state.comparedDiff.diff);
+      return;
+    }
+
     if (!holdsCurrentLock()) {
       alert('Take the project lock first.');
       return;
     }
-
-    const nextDecisions = {
-      ...state.comparedDiffDecisions,
-      [decisionKey(rowId, chunkId)]: decision,
-    };
     const payloadDecisions = Object.entries(nextDecisions).map(([key, value]) => {
       const [decisionRowId, decisionChunkId] = key.split('::');
       return {
@@ -408,6 +473,7 @@
     renderProjectDetail,
     renderProjectLists,
     renderShares,
-    revertSelectedVersion
+    revertSelectedVersion,
+    syncProposalBase
   };
 })(window);
