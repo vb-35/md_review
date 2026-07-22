@@ -203,6 +203,37 @@ try:
     assert stored_diff_count == 0
     print("PASS: list_versions")
 
+    managed_version = versions[0]
+    assert editor_client.patch(
+        f'/api/projects/{project_id}/files/versions/{managed_version["id"]}',
+        json={'message': 'Editor rename'},
+    ).status_code == 403
+    assert admin_client.delete(
+        f'/api/projects/{project_id}/files/versions/{managed_version["id"]}'
+    ).status_code == 403
+    assert admin_client.patch(
+        f'/api/projects/{project_id}/files/versions/{managed_version["id"]}',
+        json={'authorId': project['ownerId']},
+    ).status_code == 403
+    response = client.patch(
+        f'/api/projects/{project_id}/files/versions/{managed_version["id"]}',
+        json={'message': 'Reviewed update'},
+    )
+    assert response.status_code == 200, response.data
+    assert response.get_json()['message'] == 'Reviewed update'
+    response = client.patch(
+        f'/api/projects/{project_id}/files/versions/{managed_version["id"]}',
+        json={'authorId': project['ownerId']},
+    )
+    assert response.status_code == 200, response.data
+    assert response.get_json()['authorName'] == 'owner'
+    renamed_versions = client.get(
+        f'/api/projects/{project_id}/files/versions?path=docs/spec.md'
+    ).get_json()
+    assert renamed_versions[0]['message'] == 'Reviewed update'
+    assert renamed_versions[0]['author_name'] == 'owner'
+    print("PASS: owner_renames_and_reassigns_version")
+
     response = editor_client.post(f'/api/projects/{project_id}/files/compare', json={
         'path': 'docs/spec.md',
         'versionA': versions[1]['id'],
@@ -388,6 +419,19 @@ try:
     assert restored_threads[0]['resolvedBy'] is None
     assert restored_threads[0]['resolvedAt'] is None
     print("PASS: rollback_version_restores_unresolved_comments")
+
+    response = client.delete(
+        f'/api/projects/{project_id}/files/versions/{remaining_versions[0]["id"]}'
+    )
+    assert response.status_code == 200, response.data
+    assert response.get_json()['deleted'] is True
+    assert client.get(
+        f'/api/projects/{project_id}/files/versions?path=docs/final.md'
+    ).get_json() == []
+    assert client.get(
+        f'/api/projects/{project_id}/files/content?path=docs/final.md'
+    ).get_json()['content'] == '# Start\n'
+    print("PASS: owner_removes_version_record_only")
 
     assert editor_client.delete(f'/api/projects/{project_id}/lock').status_code == 200
     assert admin_client.post(f'/api/projects/{project_id}/lock').status_code == 200

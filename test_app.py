@@ -107,9 +107,11 @@ def test_index_exposes_repo_actions():
     assert 'font-size-select' in html
     assert 'find-replace-bar' in html
     assert 'proposal-review' in html
-    assert 'js/app.js?v=20260722d' in html
+    assert 'btn-version-manage-tab' in html
+    assert 'version-manage-list' in html
+    assert 'js/app.js?v=20260722e' in html
     assert 'js/proposals.js?v=20260722a' in html
-    assert 'js/projects.js?v=20260722d' in html
+    assert 'js/projects.js?v=20260722f' in html
     assert 'js/comments.js?v=20260722c' in html
     print("PASS: index_exposes_repo_actions")
 

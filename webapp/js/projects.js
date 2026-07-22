@@ -391,8 +391,113 @@
   function versionOption(version) {
     const label = version.kind === 'proposal'
       ? `Proposed · ${version.author_name} · ${version.message || 'Untitled revision'} · ${formatDate(version.created_at)}`
-      : `v${version.version} · ${version.author_name} · ${formatDate(version.created_at)}`;
+      : `v${version.version} · ${version.message || 'Untitled version'} · ${version.author_name} · ${formatDate(version.created_at)}`;
     return `<option value="${esc(version.id)}">${esc(label)}</option>`;
+  }
+
+  function versionAuthorOptions(version) {
+    const authors = new Map();
+    const addAuthor = (userId, username) => {
+      if (userId && username && !authors.has(userId)) authors.set(userId, username);
+    };
+    addAuthor(state.currentProject.ownerId, state.currentProject.ownerUsername);
+    state.projectShares.forEach((share) => addAuthor(share.userId, share.username));
+    addAuthor(version.author_id, version.author_name);
+    return [...authors.entries()].map(([userId, username]) => (
+      `<option value="${esc(userId)}"${userId === version.author_id ? ' selected' : ''}>${esc(username)}</option>`
+    )).join('');
+  }
+
+  function renderVersionManager() {
+    const manageTab = $('#btn-version-manage-tab');
+    const manageView = $('#version-manage-view');
+    const list = $('#version-manage-list');
+    const isOwner = !!(state.currentProject && state.currentProject.isOwner);
+    manageTab.classList.toggle('hidden', !isOwner);
+    if (!isOwner) {
+      manageView.classList.add('hidden');
+      list.innerHTML = '';
+      return;
+    }
+
+    const versions = state.versions.filter((version) => version.kind === 'published');
+    if (!versions.length) {
+      list.innerHTML = '<div class="empty-state">No published versions to manage.</div>';
+      return;
+    }
+    list.innerHTML = versions.map((version) => `
+      <div class="version-manage-row" data-version-id="${esc(version.id)}">
+        <div class="version-manage-meta">
+          <div class="version-manage-name">${esc(version.message || 'Untitled version')}</div>
+          <div class="version-manage-details">v${version.version} · ${esc(version.author_name)} · ${esc(formatDate(version.created_at))}</div>
+        </div>
+        <div class="version-manage-actions">
+          <label class="version-author-control">
+            <span>Author</span>
+            <select data-version-author>${versionAuthorOptions(version)}</select>
+          </label>
+          <button type="button" data-action="rename">Rename</button>
+          <button type="button" data-action="remove" class="danger">Remove</button>
+        </div>
+      </div>
+    `).join('');
+    list.querySelectorAll('.version-manage-row').forEach((row) => {
+      const version = versions.find((item) => item.id === row.dataset.versionId);
+      row.querySelectorAll('button').forEach((button) => {
+        button.addEventListener('click', () => manageVersion(version, button.dataset.action));
+      });
+      row.querySelector('[data-version-author]').addEventListener('change', (event) => {
+        manageVersion(version, 'author', event.target.value);
+      });
+    });
+  }
+
+  async function manageVersion(version, action, value = '') {
+    if (!version || !state.currentProject || !state.currentProject.isOwner) return;
+    if (action === 'rename') {
+      const nextName = window.prompt('Version name', version.message || `Version ${version.version}`);
+      if (nextName === null || nextName.trim() === version.message) return;
+      if (!nextName.trim()) {
+        window.alert('Version name required.');
+        return;
+      }
+      try {
+        await App.api('PATCH', `/projects/${state.currentProject.id}/files/versions/${version.id}`, {
+          message: nextName.trim()
+        });
+        await loadVersions();
+      } catch (error) {
+        window.alert(error.message);
+      }
+      return;
+    }
+    if (action === 'author') {
+      if (!value || value === version.author_id) return;
+      try {
+        await App.api('PATCH', `/projects/${state.currentProject.id}/files/versions/${version.id}`, {
+          authorId: value
+        });
+        await loadVersions();
+      } catch (error) {
+        window.alert(error.message);
+        renderVersionManager();
+      }
+      return;
+    }
+    if (action === 'remove') {
+      const label = version.message || `v${version.version}`;
+      if (!window.confirm(`Remove “${label}” from version history? The current file and Git history will not change.`)) return;
+      try {
+        await App.api('DELETE', `/projects/${state.currentProject.id}/files/versions/${version.id}`);
+        state.comparedDiff = null;
+        $('#diff-view').innerHTML = '';
+        $('#diff-meta').textContent = '';
+        $('#version-diff-actions').classList.add('hidden');
+        await loadVersions();
+      } catch (error) {
+        window.alert(error.message);
+      }
+    }
   }
 
   async function loadVersions() {
@@ -420,6 +525,7 @@
     }
     baseSelect.value = state.selectedBaseId || '';
     headSelect.value = state.selectedHeadId || '';
+    renderVersionManager();
   }
 
 
@@ -737,6 +843,7 @@
     renderProjectDetail,
     renderProjectLists,
     renderShares,
+    renderVersionManager,
     revertSelectedVersion,
     syncProposalBase
   };

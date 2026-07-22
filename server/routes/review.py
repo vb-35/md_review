@@ -100,6 +100,15 @@ def require_project_edit(project_id, user_id):
     return None
 
 
+def require_project_owner(project_id, user_id):
+    project = get_project_for_user(project_id, user_id)
+    if not project:
+        return None, (jsonify({'error': 'Not found'}), 404)
+    if not project.get('is_owner'):
+        return None, (jsonify({'error': 'Only the project owner can manage versions'}), 403)
+    return project, None
+
+
 def require_project_lock(project_id, user_id):
     project = get_project_for_user(project_id, user_id)
     if not project:
@@ -296,6 +305,97 @@ def get_version(project_id, version_id):
         row['proposalId'] = row.pop('proposal_id')
         row['baseCommitSha'] = row.pop('base_commit_sha')
     return jsonify(row)
+
+
+@review_bp.route('/projects/<project_id>/files/versions/<version_id>', methods=['PATCH'])
+@require_auth
+def update_version(project_id, version_id):
+    uid = session['user_id']
+    project, owner_error = require_project_owner(project_id, uid)
+    if owner_error:
+        return owner_error
+
+    data = request.get_json(silent=True) or {}
+    changes_message = 'message' in data
+    changes_author = 'authorId' in data
+    if not changes_message and not changes_author:
+        return jsonify({'error': 'Version name or author required'}), 400
+
+    conn = get_db()
+    version = conn.execute(
+        'SELECT message, author_id FROM file_versions WHERE id = ? AND project_id = ?',
+        (version_id, project_id),
+    ).fetchone()
+    if not version:
+        return jsonify({'error': 'Version not found'}), 404
+
+    message = version['message']
+    if changes_message:
+        message = data.get('message')
+        if not isinstance(message, str) or not message.strip():
+            return jsonify({'error': 'Version name required'}), 400
+        message = message.strip()
+        if len(message) > 160:
+            return jsonify({'error': 'Version name must be 160 characters or fewer'}), 400
+
+    author_id = version['author_id']
+    if changes_author:
+        author_id = str(data.get('authorId') or '').strip()
+        author = conn.execute(
+            'SELECT u.id, u.username FROM users u WHERE u.id = ? AND '
+            '(u.id = ? OR u.id = ? OR EXISTS ('
+            'SELECT 1 FROM project_shares ps WHERE ps.project_id = ? AND ps.user_id = u.id))',
+            (author_id, project['owner_id'], version['author_id'], project_id),
+        ).fetchone()
+        if not author:
+            return jsonify({'error': 'Author must be the project owner or a current project member'}), 400
+    else:
+        author = conn.execute(
+            'SELECT id, username FROM users WHERE id = ?',
+            (author_id,),
+        ).fetchone()
+
+    conn.execute(
+        'UPDATE file_versions SET message = ?, author_id = ? WHERE id = ? AND project_id = ?',
+        (message, author_id, version_id, project_id),
+    )
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        'UPDATE projects SET updated_by = ?, updated_at = ? WHERE id = ?',
+        (uid, now, project_id),
+    )
+    conn.commit()
+    return jsonify({
+        'id': version_id,
+        'message': message,
+        'authorId': author_id,
+        'authorName': author['username'],
+        'updatedAt': now,
+    })
+
+
+@review_bp.route('/projects/<project_id>/files/versions/<version_id>', methods=['DELETE'])
+@require_auth
+def delete_version(project_id, version_id):
+    uid = session['user_id']
+    _, owner_error = require_project_owner(project_id, uid)
+    if owner_error:
+        return owner_error
+
+    conn = get_db()
+    deleted = conn.execute(
+        'DELETE FROM file_versions WHERE id = ? AND project_id = ?',
+        (version_id, project_id),
+    )
+    if deleted.rowcount == 0:
+        return jsonify({'error': 'Version not found'}), 404
+    now = datetime.now(timezone.utc).isoformat()
+    conn.execute(
+        'UPDATE projects SET updated_by = ?, updated_at = ? WHERE id = ?',
+        (uid, now, project_id),
+    )
+    conn.commit()
+    return jsonify({'deleted': True, 'id': version_id, 'updatedAt': now})
 
 
 @review_bp.route('/projects/<project_id>/files/compare', methods=['POST'])

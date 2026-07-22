@@ -998,10 +998,23 @@ function wireEvents() {
       return;
     }
     openSidePanel('review');
+    $('#btn-version-history-tab').click();
     await window.App.projects.loadVersions();
   });
 
   $('#btn-close-review').addEventListener('click', closeSidePanel);
+
+  function selectVersionTab(tabName) {
+    const canManage = !!(state.currentProject && state.currentProject.isOwner);
+    const showManage = tabName === 'manage' && canManage;
+    $('#version-history-view').classList.toggle('hidden', showManage);
+    $('#version-manage-view').classList.toggle('hidden', !showManage);
+    $('#btn-version-history-tab').setAttribute('aria-selected', showManage ? 'false' : 'true');
+    $('#btn-version-manage-tab').setAttribute('aria-selected', showManage ? 'true' : 'false');
+  }
+
+  $('#btn-version-history-tab').addEventListener('click', () => selectVersionTab('history'));
+  $('#btn-version-manage-tab').addEventListener('click', () => selectVersionTab('manage'));
 
   $('#version-select-base').addEventListener('change', (event) => {
     state.selectedBaseId = event.target.value;
