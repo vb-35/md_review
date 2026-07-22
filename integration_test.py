@@ -94,6 +94,18 @@ try:
     ).status_code == 400
     print("PASS: share_project")
 
+    historic_context = {
+        'projectId': project_id,
+        'filePath': 'docs/spec.md',
+        'commitSha': first_commit,
+    }
+    response = viewer_client.post(
+        '/api/comments/threads',
+        json={**historic_context, 'body': 'Comment from version one'},
+    )
+    assert response.status_code == 201, response.data
+    historic_thread_id = response.get_json()['id']
+
     response = admin_client.get('/api/projects')
     assert response.status_code == 200
     assert any(item['id'] == project_id and item['accessRole'] == 'admin' for item in response.get_json())
@@ -149,6 +161,12 @@ try:
     response = editor_client.post(f'/api/projects/{project_id}/lock')
     assert response.status_code == 200
     print("PASS: editor_lock")
+
+    response = editor_client.post(
+        f'/api/comments/threads/{historic_thread_id}/resolve',
+        json=historic_context,
+    )
+    assert response.status_code == 200 and response.get_json()['resolved'] is True
 
     response = client.post(f'/api/projects/{project_id}/lock')
     assert response.status_code == 423, response.data
@@ -247,6 +265,7 @@ try:
     thread_id = response.get_json()['id']
     response = viewer_client.post('/api/comment-lines', json={**context, 'threadId': thread_id, 'body': 'Nit: title'})
     assert response.status_code == 201
+    reply_id = response.get_json()['id']
     response = viewer_client.get(f"/api/projects/{project_id}/threads?commitSha={second_commit}&filePath=docs/spec.md")
     assert response.status_code == 200
     assert any(thread['id'] == thread_id for thread in response.get_json())
@@ -272,6 +291,38 @@ try:
     saved_thread = next(thread for thread in response.get_json() if thread['id'] == thread_id)
     assert len(saved_thread['comments']) == 10
     print("PASS: concurrent_comment_updates_preserved")
+
+    root_comment_id = saved_thread['comments'][0]['id']
+    expected_remaining_ids = [
+        comment['id'] for comment in saved_thread['comments'] if comment['id'] != reply_id
+    ]
+    response = viewer_client.delete(
+        f'/api/comments/threads/{thread_id}/comments/{reply_id}',
+        json=context,
+    )
+    assert response.status_code == 403
+    response = admin_client.delete(
+        f'/api/comments/threads/{thread_id}/comments/{reply_id}',
+        json=context,
+    )
+    assert response.status_code == 403
+    response = client.delete(
+        f'/api/comments/threads/{thread_id}/comments/{root_comment_id}',
+        json=context,
+    )
+    assert response.status_code == 400
+    response = client.delete(
+        f'/api/comments/threads/{thread_id}/comments/{reply_id}',
+        json=context,
+    )
+    assert response.status_code == 200, response.data
+    response = viewer_client.get(
+        f'/api/projects/{project_id}/threads?commitSha={second_commit}&filePath=docs/spec.md'
+    )
+    saved_thread = next(thread for thread in response.get_json() if thread['id'] == thread_id)
+    assert len(saved_thread['comments']) == 9
+    assert [comment['id'] for comment in saved_thread['comments']] == expected_remaining_ids
+    print("PASS: owner_deletes_comment_reply")
 
     response = viewer_client.post(f'/api/comments/threads/{thread_id}/resolve', json=context)
     assert response.status_code == 403
@@ -306,7 +357,7 @@ try:
         query_string={'commitSha': rename_commit, 'filePath': 'docs/final.md'},
     )
     renamed_thread = next(thread for thread in response.get_json() if thread['id'] == thread_id)
-    assert renamed_thread['filePath'] == 'docs/final.md' and len(renamed_thread['comments']) == 10
+    assert renamed_thread['filePath'] == 'docs/final.md' and len(renamed_thread['comments']) == 9
     print("PASS: rename_markdown_file")
 
     response = editor_client.delete(f'/api/projects/{project_id}/files', json={'path': 'assets/logo.svg'})
@@ -314,12 +365,29 @@ try:
     assert os.path.exists(os.path.join(Config.REPO_ROOT, project['projectPath'], 'assets', 'logo.svg'))
     print("PASS: editor_cannot_delete_asset")
 
-    response = editor_client.post(f'/api/projects/{project_id}/files/versions/{versions[1]["id"]}/revert')
+    response = editor_client.post(f'/api/projects/{project_id}/files/versions/{versions[1]["id"]}/rollback')
     assert response.status_code == 200, response.data
+    rollback = response.get_json()
+    assert rollback['rolledBackToVersion'] == 1
+    assert rollback['deletedVersions'] == 2
+    assert rollback['restoredThreads'] == 1
     response = editor_client.get(f'/api/projects/{project_id}/files/content?path=docs/final.md')
     assert response.status_code == 200
     assert response.get_json()['content'] == '# Start\n'
-    print("PASS: revert_version")
+    response = editor_client.get(f'/api/projects/{project_id}/files/versions?path=docs/final.md')
+    assert response.status_code == 200
+    remaining_versions = [item for item in response.get_json() if item['kind'] == 'published']
+    assert [item['version'] for item in remaining_versions] == [1]
+    response = viewer_client.get(
+        f'/api/projects/{project_id}/threads',
+        query_string={'commitSha': rollback['currentCommitSha'], 'filePath': 'docs/final.md'},
+    )
+    restored_threads = response.get_json()
+    assert [thread['id'] for thread in restored_threads] == [historic_thread_id]
+    assert restored_threads[0]['resolved'] is False
+    assert restored_threads[0]['resolvedBy'] is None
+    assert restored_threads[0]['resolvedAt'] is None
+    print("PASS: rollback_version_restores_unresolved_comments")
 
     assert editor_client.delete(f'/api/projects/{project_id}/lock').status_code == 200
     assert admin_client.post(f'/api/projects/{project_id}/lock').status_code == 200

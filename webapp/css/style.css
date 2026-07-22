@@ -1107,6 +1107,19 @@ body.preview-justify-disabled .markdown-body ol {
   margin-top: 4px;
 }
 
+.comment-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.btn-delete-comment {
+  padding: 1px 5px;
+  background: transparent;
+  font-size: 11px;
+}
+
 .thread-replies {
   padding: 8px 12px;
 }

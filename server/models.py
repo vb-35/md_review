@@ -59,6 +59,7 @@ def init_db():
         file_path TEXT NOT NULL,
         version INTEGER NOT NULL,
         content TEXT NOT NULL,
+        commit_sha TEXT,
         diff TEXT,
         message TEXT DEFAULT '',
         author_id TEXT NOT NULL,
@@ -176,6 +177,15 @@ def apply_migrations(conn):
         conn.execute(
             'INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)',
             (2, datetime.now(timezone.utc).isoformat())
+        )
+        conn.commit()
+
+    if 3 not in applied:
+        if not _column_exists(conn, 'file_versions', 'commit_sha'):
+            conn.execute('ALTER TABLE file_versions ADD COLUMN commit_sha TEXT')
+        conn.execute(
+            'INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)',
+            (3, datetime.now(timezone.utc).isoformat())
         )
         conn.commit()
 

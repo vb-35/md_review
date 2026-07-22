@@ -692,8 +692,16 @@
 
   async function revertSelectedVersion() {
     if (!state.selectedBaseId || !state.currentFile) return;
-    if (!window.confirm('Revert file to the selected version? This creates a new version.')) return;
-    const result = await App.api('POST', `/projects/${state.currentProject.id}/files/versions/${state.selectedBaseId}/revert`);
+    const selected = state.versions.find((version) => version.id === state.selectedBaseId);
+    if (!selected || selected.kind === 'proposal') return;
+    const laterCount = state.versions.filter(
+      (version) => version.kind !== 'proposal' && version.version > selected.version
+    ).length;
+    const warning = laterCount
+      ? `Roll back to v${selected.version}? This permanently deletes ${laterCount} later version${laterCount === 1 ? '' : 's'} and comments added after it. Comments that existed then will be restored and reopened.`
+      : `Restore v${selected.version}? Comments that existed then will be restored and reopened.`;
+    if (!window.confirm(warning)) return;
+    const result = await App.api('POST', `/projects/${state.currentProject.id}/files/versions/${state.selectedBaseId}/rollback`);
     await refreshProjectState(state.currentFile.filePath);
     state.suspendEditorChangeTracking = true;
     App.editor.setValue(result.content || '');
@@ -701,6 +709,7 @@
     state.editing = false;
     App.preview.updatePreview();
     await loadVersions();
+    window.alert(`Rolled back to v${result.rolledBackToVersion}. Deleted ${result.deletedVersions} later version${result.deletedVersions === 1 ? '' : 's'} and restored ${result.restoredThreads} comment thread${result.restoredThreads === 1 ? '' : 's'}.`);
   }
 
   App.projects = {

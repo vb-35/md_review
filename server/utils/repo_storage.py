@@ -219,6 +219,29 @@ def get_project_head_commit(project_root):
     return output or None
 
 
+def find_file_content_commit(project_root, file_path, content):
+    """Find the newest commit where file_path had exactly content."""
+    rel_path = normalize_project_file_path(file_path)
+    history = subprocess.run(
+        ['git', '-C', str(Path(project_root).resolve()), 'log', '--format=%H', '--all', '--', rel_path],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    for commit_sha in history.stdout.splitlines():
+        candidate = subprocess.run(
+            ['git', '-C', str(Path(project_root).resolve()), 'show', f'{commit_sha}:{rel_path}'],
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if candidate.returncode == 0 and candidate.stdout == content:
+            return normalize_project_commit(project_root, commit_sha)
+    return None
+
+
 def project_repo_has_changes(project_root):
     result = subprocess.run(
         ['git', '-C', str(project_root), 'status', '--porcelain'],
@@ -371,6 +394,14 @@ def save_comment_store(project_root, file_path, commit_sha, payload):
         tmp_name = handle.name
     os.replace(tmp_name, store_path)
     return store_path
+
+
+def replace_comment_history(project_root, file_path, commit_sha, threads):
+    """Replace one file's comment history with a restored checkpoint."""
+    store_dir = get_comment_file_store_dir(project_root, file_path)
+    if store_dir.exists():
+        shutil.rmtree(store_dir)
+    return save_comment_store(project_root, file_path, commit_sha, {'threads': threads})
 
 
 def rename_comment_store_path(project_root, old_path, new_path):

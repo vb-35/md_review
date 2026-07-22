@@ -1,3 +1,4 @@
+import copy
 import uuid
 from datetime import datetime, timezone
 
@@ -6,6 +7,8 @@ from flask import Blueprint, jsonify, request, session
 from models import get_db, get_project_for_user, project_lock_is_expired, user_can_edit_project
 from utils.diff import apply_diff_decisions, compute_diff
 from utils.repo_storage import (
+    find_file_content_commit,
+    get_project_head_commit,
     git_commit_paths,
     load_applicable_comment_stores,
     load_comment_store,
@@ -14,6 +17,7 @@ from utils.repo_storage import (
     normalize_project_commit,
     project_write_lock,
     read_project_file,
+    replace_comment_history,
     resolve_project_root,
     save_comment_store,
     write_project_file,
@@ -475,6 +479,7 @@ def apply_diff_chunk_route(project_id):
 
 
 @review_bp.route('/projects/<project_id>/files/versions/<version_id>/revert', methods=['POST'])
+@review_bp.route('/projects/<project_id>/files/versions/<version_id>/rollback', methods=['POST'])
 @require_auth
 @require_locked_project_write
 def revert_version(project_id, version_id):
@@ -493,6 +498,42 @@ def revert_version(project_id, version_id):
 
     project = get_project_for_user(project_id, uid)
     project_root = resolve_project_root(project['project_path'])
+    version_commit = version['commit_sha'] or find_file_content_commit(
+        project_root, version['file_path'], version['content']
+    )
+    if not version_commit:
+        version_commit = get_project_head_commit(project_root)
+    if not version_commit:
+        return jsonify({'error': 'Version checkpoint could not be restored'}), 409
+
+    next_version = conn.execute(
+        "SELECT created_at FROM file_versions "
+        "WHERE project_id = ? AND file_path = ? AND version > ? "
+        "ORDER BY version ASC LIMIT 1",
+        (project_id, version['file_path'], version['version'])
+    ).fetchone()
+    cutoff = next_version['created_at'] if next_version else None
+    restored_threads = []
+    seen_thread_ids = set()
+    for store in load_applicable_comment_stores(project_root, version['file_path'], version_commit):
+        for stored_thread in store.get('threads', []):
+            thread_id = stored_thread.get('id')
+            if not thread_id or thread_id in seen_thread_ids:
+                continue
+            if cutoff and stored_thread.get('createdAt', '') >= cutoff:
+                continue
+            thread = copy.deepcopy(stored_thread)
+            if cutoff:
+                thread['comments'] = [
+                    comment for comment in thread.get('comments', [])
+                    if comment.get('createdAt', '') < cutoff
+                ]
+            thread['resolved'] = False
+            thread['resolvedBy'] = None
+            thread['resolvedAt'] = None
+            restored_threads.append(thread)
+            seen_thread_ids.add(thread_id)
+
     current_content = ''
     try:
         current_content = read_project_file(project_root, version['file_path'], '')
@@ -501,27 +542,23 @@ def revert_version(project_id, version_id):
 
     now = datetime.now(timezone.utc).isoformat()
     write_project_file(project_root, version['file_path'], version['content'])
-    head = git_commit_paths(project_root, [version['file_path']], f'Revert {version["file_path"]}')
-    next_version = conn.execute(
-        "SELECT COALESCE(MAX(version), 0) + 1 FROM file_versions WHERE project_id = ? AND file_path = ?",
-        (project_id, version['file_path'])
-    ).fetchone()[0]
-    author = conn.execute("SELECT username FROM users WHERE id = ?", (uid,)).fetchone()
-    author_name = author['username'] if author else uid
-    conn.execute(
-        "INSERT INTO file_versions (id, project_id, file_path, version, content, message, author_id, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (
-            str(uuid.uuid4()),
-            project_id,
-            version['file_path'],
-            next_version,
-            version['content'],
-            f"Reverted to v{version['version']} by {author_name}",
-            uid,
-            now,
-        )
+    head = git_commit_paths(
+        project_root,
+        [version['file_path']],
+        f'Roll back {version["file_path"]} to v{version["version"]}'
     )
+    for thread in restored_threads:
+        thread['commitSha'] = head
+    replace_comment_history(project_root, version['file_path'], head, restored_threads)
+    deleted_versions = conn.execute(
+        "DELETE FROM file_versions WHERE project_id = ? AND file_path = ? AND version > ?",
+        (project_id, version['file_path'], version['version'])
+    ).rowcount
+    if not version['commit_sha']:
+        conn.execute(
+            'UPDATE file_versions SET commit_sha = ? WHERE id = ?',
+            (version_commit, version['id'])
+        )
     conn.execute(
         "UPDATE projects SET updated_by = ?, updated_at = ? WHERE id = ?",
         (uid, now, project_id)
@@ -533,6 +570,9 @@ def revert_version(project_id, version_id):
         'content': version['content'],
         'currentCommitSha': head,
         'diff': compute_diff(current_content, version['content']),
+        'rolledBackToVersion': version['version'],
+        'deletedVersions': deleted_versions,
+        'restoredThreads': len(restored_threads),
     })
 
 
@@ -621,6 +661,40 @@ def add_comment():
     })
     save_comment_store(context['projectRoot'], context['filePath'], context['commitSha'], store)
     return jsonify({'id': comment_id, 'threadId': data['threadId'], 'userId': uid, 'body': data['body'], 'createdAt': now}), 201
+
+
+@review_bp.route('/comments/threads/<thread_id>/comments/<comment_id>', methods=['DELETE'])
+@require_auth
+@require_locked_comment_write
+def delete_comment(thread_id, comment_id):
+    uid = session['user_id']
+    data = request.get_json() or {}
+    context, store, error = require_thread_edit_context(thread_id, uid, data)
+    if error:
+        return error
+
+    project = get_project_for_user(context['projectId'], uid)
+    if not project or not project.get('is_owner'):
+        return jsonify({'error': 'Only the project owner can delete replies'}), 403
+
+    thread = next(item for item in store['threads'] if item['id'] == thread_id)
+    comments = thread.get('comments', [])
+    comment_index = next(
+        (index for index, comment in enumerate(comments) if comment.get('id') == comment_id),
+        None,
+    )
+    if comment_index is None:
+        return jsonify({'error': 'Comment not found'}), 404
+    if comment_index == 0:
+        return jsonify({'error': 'The opening comment cannot be deleted separately'}), 400
+
+    deleted = comments.pop(comment_index)
+    save_comment_store(context['projectRoot'], context['filePath'], context['commitSha'], store)
+    return jsonify({
+        'id': deleted['id'],
+        'threadId': thread_id,
+        'deleted': True,
+    })
 
 
 @review_bp.route('/projects/<project_id>/threads', methods=['GET'])

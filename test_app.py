@@ -34,8 +34,12 @@ def test_init_db():
         row['name'] for row in db.execute('PRAGMA table_info(revision_proposal_files)').fetchall()
     }
     assert {'applied_decisions_hash', 'applied_commit_sha', 'applied_at'} <= proposal_file_columns
+    version_columns = {
+        row['name'] for row in db.execute('PRAGMA table_info(file_versions)').fetchall()
+    }
+    assert 'commit_sha' in version_columns
     migrations = {row['version'] for row in db.execute('SELECT version FROM schema_migrations')}
-    assert {1, 2} <= migrations
+    assert {1, 2, 3} <= migrations
     db.close()
     print("PASS: init_db")
 
@@ -91,7 +95,8 @@ def test_index_exposes_repo_actions():
     assert 'proposal-review' in html
     assert 'js/app.js?v=20260722a' in html
     assert 'js/proposals.js?v=20260722a' in html
-    assert 'js/projects.js?v=20260722b' in html
+    assert 'js/projects.js?v=20260722c' in html
+    assert 'js/comments.js?v=20260722c' in html
     print("PASS: index_exposes_repo_actions")
 
 

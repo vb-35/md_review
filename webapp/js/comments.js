@@ -326,6 +326,7 @@
     );
     const canComment = canCommentCurrentProject();
     const canResolve = canEditCurrentProject();
+    const canDeleteReplies = !!state.currentProject && !!state.currentProject.isOwner;
     $('#thread-body').disabled = !canComment;
     $('#btn-add-thread').disabled = !canComment;
     $('#thread-body').placeholder = canComment ? 'New comment...' : 'File access required to comment';
@@ -353,9 +354,12 @@
         ${getAnchorLabel(thread.anchor)}
         ${thread.resolved ? `<div class="resolved-badge">Resolved${thread.resolvedAt ? ` on ${esc(new Date(thread.resolvedAt).toLocaleDateString())}` : ''}</div>` : ''}
         <div class="thread-replies">
-          ${(thread.comments || []).map((comment) => `
+          ${(thread.comments || []).map((comment, commentIndex) => `
             <div class="comment">
-              <div class="comment-author">${esc(comment.username || 'user')}</div>
+              <div class="comment-meta">
+                <div class="comment-author">${esc(comment.username || 'user')}</div>
+                ${canDeleteReplies && commentIndex > 0 ? `<button type="button" class="btn-delete-comment danger" data-comment-id="${esc(comment.id)}">Delete</button>` : ''}
+              </div>
               <div class="comment-time">${esc(formatDate(comment.createdAt))}</div>
               <div class="comment-body">${esc(comment.body)}</div>
             </div>
@@ -422,6 +426,36 @@
           }
         });
       }
+
+      div.querySelectorAll('.btn-delete-comment').forEach((button) => {
+        button.addEventListener('click', async (event) => {
+          event.stopPropagation();
+          if (!canDeleteReplies) return;
+          const targetCommentId = button.dataset.commentId;
+          const targetComment = (thread.comments || []).find((comment) => comment.id === targetCommentId);
+          if (!targetComment) {
+            alert('Delete failed: reply no longer exists');
+            return;
+          }
+          const body = String(targetComment.body || '');
+          const bodyPreview = body.length > 120 ? `${body.slice(0, 117)}...` : body;
+          if (!window.confirm(`Delete this reply by ${targetComment.username || 'user'}?\n\n“${bodyPreview}”`)) return;
+          try {
+            const context = currentCommentContext();
+            if (!context) throw new Error('Missing comment context for current file version');
+            const result = await App.api(
+              'DELETE',
+              `/comments/threads/${thread.id}/comments/${encodeURIComponent(targetCommentId)}`,
+              context
+            );
+            if (result.id !== targetCommentId) throw new Error('Server deleted an unexpected reply');
+            await loadThreads();
+            updateCommentMarkers();
+          } catch (error) {
+            alert(`Delete failed: ${error.message}`);
+          }
+        });
+      });
 
       list.appendChild(div);
     });

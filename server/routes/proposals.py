@@ -733,6 +733,7 @@ def apply_unsaved_proposal_files(project_id, row, project_root, decisions, revie
                 f"Accepted proposal: {row['title']}",
                 reviewer_id,
                 now,
+                head,
             )
         get_db().execute(
             'UPDATE projects SET updated_by = ?, updated_at = ? WHERE id = ?',

@@ -160,21 +160,23 @@ def require_file_delete_access(project):
     return None
 
 
-def insert_file_version(project_id, file_path, content, message, author_id, now):
+def insert_file_version(project_id, file_path, content, message, author_id, now, commit_sha):
     conn = get_db()
     next_version = conn.execute(
         "SELECT COALESCE(MAX(version), 0) + 1 FROM file_versions WHERE project_id = ? AND file_path = ?",
         (project_id, file_path)
     ).fetchone()[0]
     conn.execute(
-        "INSERT INTO file_versions (id, project_id, file_path, version, content, message, author_id, created_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO file_versions "
+        "(id, project_id, file_path, version, content, commit_sha, message, author_id, created_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             str(uuid.uuid4()),
             project_id,
             file_path,
             next_version,
             content,
+            commit_sha,
             message,
             author_id,
             now,
@@ -360,7 +362,7 @@ def create_project_file(project_id):
     now = datetime.now(timezone.utc).isoformat()
     ensure_project_file(project_root, file_path, content)
     head = git_commit_paths(project_root, [file_path], f'Save {file_path}')
-    insert_file_version(project_id, file_path, content, 'Created file', uid, now)
+    insert_file_version(project_id, file_path, content, 'Created file', uid, now, head)
     get_db().execute(
         "UPDATE projects SET updated_by = ?, updated_at = ? WHERE id = ?",
         (uid, now, project_id)
@@ -499,7 +501,7 @@ def save_project_file_content(project_id):
     if changed:
         write_project_file(project_root, file_path, content)
         head = git_commit_paths(project_root, [file_path], f'Save {file_path}')
-        insert_file_version(project_id, file_path, content, 'Saved file', uid, now)
+        insert_file_version(project_id, file_path, content, 'Saved file', uid, now, head)
         get_db().execute(
             'UPDATE projects SET updated_by = ?, updated_at = ? WHERE id = ?',
             (uid, now, project_id)
