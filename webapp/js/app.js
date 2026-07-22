@@ -24,6 +24,15 @@ const editorReady = new Promise((resolve) => {
   resolveEditorReady = resolve;
 });
 
+function focusWithoutScroll(element) {
+  if (!element) return;
+  try {
+    element.focus({ preventScroll: true });
+  } catch {
+    element.focus();
+  }
+}
+
 function createFallbackEditorAdapter() {
   let textarea = null;
   const changeCallbacks = new Set();
@@ -123,7 +132,7 @@ function createFallbackEditorAdapter() {
       textarea.style.color = isEditable ? 'var(--fg)' : 'var(--fg-dim)';
     },
     focus() {
-      if (textarea) textarea.focus();
+      focusWithoutScroll(textarea);
     },
     getSelection() {
       const input = textarea;
@@ -139,7 +148,7 @@ function createFallbackEditorAdapter() {
     },
     setSelection(anchor, head = anchor) {
       if (!textarea) return;
-      textarea.focus();
+      focusWithoutScroll(textarea);
       textarea.setSelectionRange(anchor, head);
     },
     replaceSelection(text) {
@@ -152,7 +161,7 @@ function createFallbackEditorAdapter() {
     },
     setCursor(offset) {
       if (!textarea) return;
-      textarea.focus();
+      focusWithoutScroll(textarea);
       textarea.setSelectionRange(offset, offset);
     },
     revealOffset(offset) {
@@ -778,6 +787,7 @@ window.App = {
     currentCommentContext,
     esc,
     formatDate,
+    focusWithoutScroll,
     getStoredIdentifier,
     hasActiveProjectLock,
     holdsCurrentLock,

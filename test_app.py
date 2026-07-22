@@ -109,7 +109,10 @@ def test_index_exposes_repo_actions():
     assert 'proposal-review' in html
     assert 'btn-version-manage-tab' in html
     assert 'version-manage-list' in html
-    assert 'js/app.js?v=20260722e' in html
+    assert 'css/style.css?v=20260722e' in html
+    assert 'js/app.js?v=20260722f' in html
+    assert 'js/find-replace.js?v=20260722b' in html
+    assert 'js/editor.js?v=20260722a' in html
     assert 'js/proposals.js?v=20260722a' in html
     assert 'js/projects.js?v=20260722f' in html
     assert 'js/comments.js?v=20260722c' in html

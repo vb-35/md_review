@@ -83,7 +83,7 @@
     $('#replace-input').value = state.findReplace.replacement || '';
     App.editor.openSearchPanel();
     refreshMatches();
-    $('#find-input').focus();
+    App.helpers.focusWithoutScroll($('#find-input'));
     $('#find-input').select();
     return true;
   }
@@ -149,11 +149,11 @@
   function bindEvents() {
     $('#find-input').addEventListener('input', () => {
       refreshMatches();
-      $('#find-input').focus();
+      App.helpers.focusWithoutScroll($('#find-input'));
     });
     $('#replace-input').addEventListener('input', () => {
       refreshMatches();
-      $('#replace-input').focus();
+      App.helpers.focusWithoutScroll($('#replace-input'));
     });
     $('#btn-find-prev').addEventListener('click', () => jump('backward'));
     $('#btn-find-next').addEventListener('click', () => jump('forward'));
