@@ -91,7 +91,7 @@ def test_index_exposes_repo_actions():
     assert 'proposal-review' in html
     assert 'js/app.js?v=20260722a' in html
     assert 'js/proposals.js?v=20260722a' in html
-    assert 'js/projects.js?v=20260722a' in html
+    assert 'js/projects.js?v=20260722b' in html
     print("PASS: index_exposes_repo_actions")
 
 

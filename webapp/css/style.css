@@ -533,6 +533,10 @@ select {
   gap: 8px;
 }
 
+.share-row-actions select {
+  min-width: 110px;
+}
+
 #split-view {
   position: relative;
   display: flex;

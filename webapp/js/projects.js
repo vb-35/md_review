@@ -140,13 +140,40 @@
       <div class="share-row">
         <div class="share-row-meta">
           <div class="share-row-username">${esc(share.username)}</div>
-          <div class="share-row-subtitle">${esc(App.helpers.capitalize(share.role))}</div>
+          <div class="share-row-subtitle">Change role</div>
         </div>
         <div class="share-row-actions">
+          <select data-share-role data-user-id="${share.userId}" data-current-role="${share.role}" aria-label="Role for ${esc(share.username)}">
+            ${['viewer', 'editor', 'admin'].map((role) => (
+              `<option value="${role}"${share.role === role ? ' selected' : ''}>${App.helpers.capitalize(role)}</option>`
+            )).join('')}
+          </select>
           <button data-user-id="${share.userId}" class="danger">Remove</button>
         </div>
       </div>
     `).join('');
+    list.querySelectorAll('select[data-share-role]').forEach((select) => {
+      select.addEventListener('change', async () => {
+        const share = state.projectShares.find((item) => item.userId === select.dataset.userId);
+        if (!share || select.value === share.role) return;
+        const error = $('#share-error');
+        error.classList.add('hidden');
+        select.disabled = true;
+        try {
+          await App.api('POST', `/projects/${state.currentProject.id}/shares`, {
+            username: share.username,
+            role: select.value
+          });
+          state.projectShares = await App.api('GET', `/projects/${state.currentProject.id}/shares`);
+          renderShares();
+        } catch (err) {
+          select.value = share.role;
+          select.disabled = false;
+          error.textContent = err.message;
+          error.classList.remove('hidden');
+        }
+      });
+    });
     list.querySelectorAll('button').forEach((button) => {
       button.addEventListener('click', async () => {
         await App.api('DELETE', `/projects/${state.currentProject.id}/shares/${button.dataset.userId}`);
