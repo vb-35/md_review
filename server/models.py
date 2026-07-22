@@ -255,7 +255,7 @@ def get_project_for_user(project_id, user_id):
 
 def user_can_edit_project(project_id, user_id):
     row = get_project_for_user(project_id, user_id)
-    return row is not None and row['access_role'] in ('owner', 'editor')
+    return row is not None and row['access_role'] in ('owner', 'admin', 'editor')
 
 
 def parse_timestamp(value):

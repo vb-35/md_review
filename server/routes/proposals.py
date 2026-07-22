@@ -18,13 +18,16 @@ from models import (
 from utils.diff import apply_diff_decisions, compute_diff
 from utils.repo_storage import (
     get_project_head_commit,
+    git_commit_paths,
     load_applicable_comment_stores,
     normalize_project_file_path,
     project_write_lock,
     read_project_file,
+    reset_project_to_commit,
     resolve_project_file,
     resolve_project_root,
     save_comment_store,
+    write_project_file,
 )
 
 
@@ -370,7 +373,8 @@ def proposal_detail(row):
             'decided': len(decided),
             'accepted': accepted,
             'complete': complete,
-            'canClose': complete and files_applied,
+            'filesApplied': files_applied,
+            'canClose': complete,
         },
     })
     return detail
@@ -701,6 +705,50 @@ def restore_comment_stores(project_root, snapshots):
         save_comment_store(project_root, file_path, commit_sha, store)
 
 
+def apply_unsaved_proposal_files(project_id, row, project_root, decisions, reviewer_id, now):
+    from routes.projects import insert_file_version
+
+    pending = []
+    changed = []
+    for item in load_proposal_files(row['id']):
+        review = proposal_file_review(item, decisions)
+        if review['applied']:
+            continue
+        current_content = read_project_file(project_root, item['file_path'], '')
+        projected = project_proposal_file(item, current_content, decisions)
+        if projected['content'] != current_content:
+            write_project_file(project_root, item['file_path'], projected['content'])
+            changed.append((item['file_path'], projected['content']))
+        pending.append((item['file_path'], review['decisionsHash']))
+
+    head = get_project_head_commit(project_root)
+    if changed:
+        paths = [file_path for file_path, _ in changed]
+        head = git_commit_paths(project_root, paths, f"Apply proposal: {row['title']}")
+        for file_path, content in changed:
+            insert_file_version(
+                project_id,
+                file_path,
+                content,
+                f"Accepted proposal: {row['title']}",
+                reviewer_id,
+                now,
+            )
+        get_db().execute(
+            'UPDATE projects SET updated_by = ?, updated_at = ? WHERE id = ?',
+            (reviewer_id, now, project_id),
+        )
+
+    for file_path, decisions_hash in pending:
+        get_db().execute(
+            'UPDATE revision_proposal_files SET applied_decisions_hash = ?, '
+            'applied_commit_sha = ?, applied_at = ? '
+            'WHERE proposal_id = ? AND file_path = ?',
+            (decisions_hash, head, now, row['id'], file_path),
+        )
+    return head
+
+
 @proposal_bp.route('/projects/<project_id>/proposals/<proposal_id>/close', methods=['POST'])
 @require_auth
 @with_proposal_project_lock
@@ -719,24 +767,20 @@ def close_proposal(project_id, proposal_id):
     detail = proposal_detail(row)
     if not detail['review']['complete']:
         return jsonify({'error': 'Every proposal item must be accepted or refused'}), 409
-    unapplied = [file['filePath'] for file in detail['files'] if not file['applied']]
-    if unapplied:
-        return jsonify({
-            'error': 'Save every reviewed file after its latest decision before closing',
-            'files': unapplied,
-        }), 409
 
     decisions = {
-        (item['item_kind'], item['file_path'], item['item_id']): item['decision']
+        (item['item_kind'], item['file_path'], item['item_id']): item
         for item in load_decisions(proposal_id)
     }
     accepted_actions = [
         action for action in load_comment_actions(proposal_id)
-        if decisions[('comment', '', action['id'])] == 'accept'
+        if decisions[('comment', '', action['id'])]['decision'] == 'accept'
     ]
     project_root = resolve_project_root(project['project_path'])
+    original_head = get_project_head_commit(project_root)
     comment_snapshots = {}
     comments_started = False
+    file_apply_started = False
     try:
         if accepted_actions:
             comment_stores, comment_snapshots = prepare_comment_actions(
@@ -746,12 +790,17 @@ def close_proposal(project_id, proposal_id):
             save_comment_stores(project_root, comment_stores)
 
         now = datetime.now(timezone.utc).isoformat()
+        file_apply_started = True
+        applied_head = apply_unsaved_proposal_files(
+            project_id, row, project_root, decisions, uid, now
+        )
         conn = get_db()
         try:
             conn.execute(
                 "UPDATE revision_proposals SET status = 'closed', stale_reason = NULL, "
-                'decided_by = ?, decided_at = ?, applied_commit_sha = ? WHERE id = ?',
-                (uid, now, get_project_head_commit(project_root), proposal_id)
+                'base_commit_sha = ?, decided_by = ?, decided_at = ?, applied_commit_sha = ? '
+                'WHERE id = ?',
+                (applied_head, uid, now, applied_head, proposal_id)
             )
             conn.commit()
         except Exception:
@@ -759,6 +808,12 @@ def close_proposal(project_id, proposal_id):
             raise
         return jsonify(proposal_detail(proposal_row(proposal_id)))
     except Exception as exc:
+        get_db().rollback()
+        if file_apply_started:
+            try:
+                reset_project_to_commit(project_root, original_head)
+            except Exception:
+                pass
         if comments_started:
             try:
                 restore_comment_stores(project_root, comment_snapshots)

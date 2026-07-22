@@ -100,7 +100,7 @@ def require_project_lock(project_id, user_id):
     project = get_project_for_user(project_id, user_id)
     if not project:
         return None, (jsonify({'error': 'Not found'}), 404)
-    if project['access_role'] not in ('owner', 'editor'):
+    if project['access_role'] not in ('owner', 'admin', 'editor'):
         return None, (jsonify({'error': 'Forbidden'}), 403)
     if project.get('lock_owner_id') != user_id:
         return None, (jsonify({'error': 'Take the project lock first.'}), 423)

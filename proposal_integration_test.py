@@ -30,6 +30,7 @@ app = create_app()
 owner = app.test_client()
 codex = app.test_client()
 editor = app.test_client()
+admin = app.test_client()
 
 
 def login(client, username):
@@ -70,6 +71,7 @@ def decide(client, project_id, proposal):
 try:
     owner_user = login(owner, 'owner')
     codex_user = login(codex, 'codex')
+    login(admin, 'admin')
     login(editor, 'editor')
 
     response = owner.post('/api/projects', json={'title': 'Codex Review'})
@@ -107,6 +109,42 @@ try:
         json={'username': 'editor', 'role': 'editor'},
     )
     assert response.status_code == 200, response.data
+    response = owner.post(
+        f'/api/projects/{project_id}/shares',
+        json={'username': 'admin', 'role': 'admin'},
+    )
+    assert response.status_code == 200, response.data
+
+    response = codex.post(f'/api/projects/{project_id}/proposals', json={
+        'title': 'Admin review test',
+        'summary': '',
+        'baseCommitSha': base_commit,
+        'files': [{'path': 'docs/two.md', 'content': 'alpha\nadmin reviewed\n'}],
+    })
+    assert response.status_code == 201, response.data
+    admin_review_proposal = response.get_json()
+    admin_review_item = admin_review_proposal['files'][0]['reviewItems'][0]
+    assert admin.post(f'/api/projects/{project_id}/lock').status_code == 200
+    response = admin.put(
+        f"/api/projects/{project_id}/proposals/{admin_review_proposal['id']}/decisions",
+        json={'items': [{
+            'kind': 'diff',
+            'filePath': 'docs/two.md',
+            'itemId': admin_review_item['itemId'],
+            'decision': 'accept',
+        }]},
+    )
+    assert response.status_code == 200, response.data
+    response = admin.post(
+        f"/api/projects/{project_id}/proposals/{admin_review_proposal['id']}/reject"
+    )
+    assert response.status_code == 200, response.data
+    assert response.get_json()['status'] == 'rejected'
+    assert admin.delete(f'/api/projects/{project_id}/lock').status_code == 200
+    assert owner.delete(
+        f"/api/projects/{project_id}/proposals/{admin_review_proposal['id']}"
+    ).status_code == 200
+    print('PASS: admin_can_review_and_reject_proposals')
 
     response = codex.post(f'/api/projects/{project_id}/proposals', json={
         'title': 'Owner deletion test',
@@ -319,7 +357,8 @@ try:
 
     proposal = decide(owner, project_id, proposal)
     assert proposal['review']['complete'] is True
-    assert proposal['review']['canClose'] is False
+    assert proposal['review']['canClose'] is True
+    assert proposal['review']['filesApplied'] is False
     response = owner.post(
         f"/api/projects/{project_id}/proposals/{proposal['id']}/preview",
         json={'filePath': 'docs/one.md', 'baselineContent': '# One\nkeep\n'},
@@ -338,7 +377,7 @@ try:
     saved_one = response.get_json()
     assert saved_one['versionCreated'] is True
     assert saved_one['proposalReview']['applied'] is True
-    assert saved_one['proposalReview']['canClose'] is False
+    assert saved_one['proposalReview']['canClose'] is True
     saved_head = saved_one['currentCommitSha']
 
     proposal = owner.get(
@@ -379,6 +418,7 @@ try:
     closed = response.get_json()
     assert closed['status'] == 'closed'
     assert closed['review']['canClose'] is True
+    assert closed['review']['filesApplied'] is True
     assert closed['reviewerUsername'] == 'owner'
     assert closed['appliedCommitSha'] == saved_head
     assert project_content(owner, project_id, 'docs/one.md')['content'] == projected_one
@@ -495,38 +535,61 @@ try:
     assert response.status_code == 201, response.data
     rollback_proposal = response.get_json()
     assert owner.post(f'/api/projects/{project_id}/lock').status_code == 200
-    rollback_proposal = decide(owner, project_id, rollback_proposal)
+    response = owner.put(
+        f"/api/projects/{project_id}/proposals/{rollback_proposal['id']}/decisions",
+        json={'items': [
+            *({
+                'kind': 'diff',
+                'filePath': file['filePath'],
+                'itemId': item['itemId'],
+                'decision': 'accept',
+            } for file in rollback_proposal['files'] for item in file['reviewItems']),
+            *({
+                'kind': 'comment',
+                'itemId': action['id'],
+                'decision': 'accept',
+            } for action in rollback_proposal['commentActions']),
+        ]},
+    )
+    assert response.status_code == 200, response.data
+    rollback_proposal = response.get_json()
+    assert rollback_proposal['review']['canClose'] is True
+    assert rollback_proposal['review']['filesApplied'] is False
     response = owner.post(
         f"/api/projects/{project_id}/proposals/{rollback_proposal['id']}/preview",
         json={'filePath': 'docs/two.md', 'baselineContent': 'alpha\nhuman edit\n'},
     )
     assert response.status_code == 200, response.data
     rollback_content = response.get_json()['content']
-    response = owner.put(f'/api/projects/{project_id}/files/content', json={
-        'path': 'docs/two.md',
-        'content': rollback_content,
-        'baseCommitSha': latest_commit,
-        'proposalId': rollback_proposal['id'],
-    })
-    assert response.status_code == 200, response.data
-    rollback_head = response.get_json()['currentCommitSha']
+    assert rollback_content == 'alpha\nhuman edit\nreviewed candidate\n'
     with patch('routes.proposals.save_comment_store', side_effect=RuntimeError('forced comment failure')):
         response = owner.post(
             f"/api/projects/{project_id}/proposals/{rollback_proposal['id']}/close"
         )
     assert response.status_code == 500, response.data
     rolled_back = project_content(owner, project_id, 'docs/two.md')
-    assert rolled_back['content'] == rollback_content
-    assert rolled_back['currentCommitSha'] == rollback_head
+    assert rolled_back['content'] == 'alpha\nhuman edit\n'
+    assert rolled_back['currentCommitSha'] == latest_commit
     response = owner.get(f"/api/projects/{project_id}/proposals/{rollback_proposal['id']}")
     assert response.get_json()['status'] == 'pending'
     response = owner.post(
         f"/api/projects/{project_id}/proposals/{rollback_proposal['id']}/close"
     )
     assert response.status_code == 200, response.data
-    assert response.get_json()['status'] == 'closed'
+    auto_closed = response.get_json()
+    assert auto_closed['status'] == 'closed'
+    assert auto_closed['review']['filesApplied'] is True
+    assert auto_closed['appliedCommitSha'] != latest_commit
+    applied = project_content(owner, project_id, 'docs/two.md')
+    assert applied['content'] == rollback_content
+    assert applied['currentCommitSha'] == auto_closed['appliedCommitSha']
+    versions = owner.get(
+        f'/api/projects/{project_id}/files/versions?path=docs/two.md'
+    ).get_json()
+    assert versions[0]['message'] == 'Accepted proposal: Close rollback'
+    assert versions[0]['author_name'] == 'owner'
     assert owner.delete(f'/api/projects/{project_id}/lock').status_code == 200
-    print('PASS: failed_close_keeps_saved_files_and_pending_status')
+    print('PASS: close_auto_applies_versions_and_failed_close_keeps_project_unchanged')
 
     assert codex.post(f'/api/projects/{project_id}/lock').status_code == 200
     with app.app_context():

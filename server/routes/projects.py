@@ -39,7 +39,7 @@ from utils.repo_storage import (
 
 
 project_bp = Blueprint('projects', __name__)
-SHARE_ROLES = {'viewer', 'editor'}
+SHARE_ROLES = {'admin', 'editor', 'viewer'}
 MARKDOWN_EXTENSIONS = {'.md', '.markdown'}
 
 
@@ -129,7 +129,7 @@ def get_accessible_project_or_404(project_id, user_id):
 
 
 def require_edit_access(project):
-    if project['access_role'] not in ('owner', 'editor'):
+    if project['access_role'] not in ('owner', 'admin', 'editor'):
         return jsonify({'error': 'Forbidden'}), 403
     return None
 
@@ -144,6 +144,18 @@ def require_project_lock(project, user_id):
 
 def require_owner_access(project):
     if not project['is_owner']:
+        return jsonify({'error': 'Forbidden'}), 403
+    return None
+
+
+def require_share_management_access(project):
+    if project['access_role'] not in ('owner', 'admin'):
+        return jsonify({'error': 'Forbidden'}), 403
+    return None
+
+
+def require_file_delete_access(project):
+    if project['access_role'] not in ('owner', 'admin'):
         return jsonify({'error': 'Forbidden'}), 403
     return None
 
@@ -369,7 +381,7 @@ def delete_file(project_id):
     row, error = get_accessible_project_or_404(project_id, uid)
     if error:
         return error
-    permission_error = require_edit_access(row)
+    permission_error = require_file_delete_access(row)
     if permission_error:
         return permission_error
 
@@ -706,7 +718,7 @@ def list_project_shares(project_id):
     row, error = get_accessible_project_or_404(project_id, session['user_id'])
     if error:
         return error
-    permission_error = require_owner_access(row)
+    permission_error = require_share_management_access(row)
     if permission_error:
         return permission_error
 
@@ -741,7 +753,7 @@ def create_or_update_share(project_id):
     row, error = get_accessible_project_or_404(project_id, uid)
     if error:
         return error
-    permission_error = require_owner_access(row)
+    permission_error = require_share_management_access(row)
     if permission_error:
         return permission_error
 
@@ -751,7 +763,7 @@ def create_or_update_share(project_id):
     if not username:
         return jsonify({'error': 'username required'}), 400
     if role not in SHARE_ROLES:
-        return jsonify({'error': 'role must be viewer or editor'}), 400
+        return jsonify({'error': 'role must be admin, editor, or viewer'}), 400
 
     conn = get_db()
     user_row = conn.execute("SELECT id, username FROM users WHERE username = ?", (username,)).fetchone()
@@ -797,7 +809,7 @@ def delete_share(project_id, user_id):
     row, error = get_accessible_project_or_404(project_id, uid)
     if error:
         return error
-    permission_error = require_owner_access(row)
+    permission_error = require_share_management_access(row)
     if permission_error:
         return permission_error
 

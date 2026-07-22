@@ -316,7 +316,9 @@ def _sort_chunk_decisions(decisions):
         decisions,
         key=lambda item: (
             parse_index(item.get('rowId', ''), 'row-'),
-            parse_index(item.get('chunkId', ''), '-chunk-'),
+            # Apply edits within one line right-to-left so earlier replacements
+            # do not shift the source-token positions of later chunks.
+            -parse_index(item.get('chunkId', ''), '-chunk-'),
         )
     )
 
@@ -570,6 +572,114 @@ def _apply_replace_chunk(current_content, chunk, decision, row, prev_context=Non
     return ''.join(f'{line}{endings[idx] if idx < len(endings) else ""}' for idx, line in enumerate(lines))
 
 
+def _materialize_complete_replace_line(chunks, decisions):
+    base_tokens = _tokenize(chunks[0]['baseLineText'])
+    ordered = sorted(
+        chunks,
+        key=lambda chunk: (chunk['baseTokenStart'], chunk['baseTokenEnd']),
+        reverse=True,
+    )
+    for chunk in ordered:
+        if decisions[chunk['chunkId']] != 'accept':
+            continue
+        start = chunk['baseTokenStart']
+        end = chunk['baseTokenEnd']
+        base_tokens[start:end] = _tokenize(chunk['candText'])
+    return _line_from_tokens(base_tokens)
+
+
+def _apply_complete_replace_row(
+    current_content, row, decisions, prev_context=None, next_context=None
+):
+    chunks = row.get('chunks', [])
+    target_line = _materialize_complete_replace_line(chunks, decisions)
+    base_line = chunks[0]['baseLineText']
+    candidate_line = chunks[0]['candLineText']
+    lines = current_content.splitlines(keepends=False)
+    endings = _line_endings(current_content)
+    if not lines and current_content == '':
+        lines = ['']
+        endings = ['']
+
+    line_index = _find_best_line_index(
+        lines,
+        base_line,
+        preferred_line_number=row.get('baseLine'),
+        alternate_line=candidate_line,
+        prev_context=prev_context,
+        next_context=next_context,
+    )
+    if line_index is None:
+        return None
+    if lines[line_index] == target_line:
+        return current_content
+    lines[line_index] = target_line
+    return ''.join(
+        f'{line}{endings[index] if index < len(endings) else ""}'
+        for index, line in enumerate(lines)
+    )
+
+
+def _complete_decision_keys(diff_rows):
+    return {
+        (row['rowId'], chunk['chunkId'])
+        for row in diff_rows
+        for chunk in row.get('chunks', [])
+        if chunk['kind'] in ('line-add', 'line-remove')
+        or (chunk['kind'] == 'replace' and row['type'] == 'added')
+    }
+
+
+def _line_with_ending(text, line_number, fallback=''):
+    lines = text.splitlines(keepends=True)
+    if line_number and 0 < line_number <= len(lines):
+        return lines[line_number - 1]
+    return fallback
+
+
+def _materialize_complete_document(base_text, candidate_text, diff_rows, decisions):
+    output = []
+    for row in diff_rows:
+        chunks = row.get('chunks', [])
+        kind = chunks[0]['kind'] if chunks else None
+        if row['type'] == 'context':
+            output.append(_line_with_ending(
+                base_text, row.get('baseLine'), row.get('line', '')
+            ))
+            continue
+        if kind == 'replace':
+            if row['type'] != 'added':
+                continue
+            row_choices = {
+                chunk['chunkId']: decisions[(row['rowId'], chunk['chunkId'])]
+                for chunk in chunks
+            }
+            line = _materialize_complete_replace_line(chunks, row_choices)
+            source = _line_with_ending(
+                base_text, row.get('baseLine'),
+                _line_with_ending(candidate_text, row.get('candLine'), line),
+            )
+            ending = source[len(_strip_line_endings(source)):]
+            output.append(f'{line}{ending}')
+            continue
+        if kind == 'line-add':
+            chunk = chunks[0]
+            if decisions[(row['rowId'], chunk['chunkId'])] == 'accept':
+                output.append(_line_with_ending(
+                    candidate_text, row.get('candLine'), row.get('line', '')
+                ))
+            continue
+        if kind == 'line-remove':
+            chunk = chunks[0]
+            if decisions[(row['rowId'], chunk['chunkId'])] == 'refuse':
+                output.append(_line_with_ending(
+                    base_text, row.get('baseLine'), row.get('line', '')
+                ))
+            continue
+        raise RuntimeError(f"Unsupported diff row {row.get('rowId')}")
+    return ''.join(output)
+
+
 def _apply_line_chunk(current_content, chunk, decision, row):
     lines = current_content.splitlines(keepends=False)
     endings = _line_endings(current_content)
@@ -633,9 +743,10 @@ def apply_diff_chunk(base_text, candidate_text, current_content, row_id, chunk_i
 
 
 def apply_diff_decisions(base_text, candidate_text, original_content, decisions):
-    content = original_content
     diff_rows = compute_diff(base_text, candidate_text)
-    for item in _sort_chunk_decisions(decisions):
+    resolved = []
+    row_decisions = {}
+    for item in decisions:
         row_id = item.get('rowId')
         chunk_id = item.get('chunkId')
         decision = item.get('decision')
@@ -644,8 +755,54 @@ def apply_diff_decisions(base_text, candidate_text, original_content, decisions)
         row, chunk, row_index = _find_chunk(diff_rows, row_id, chunk_id)
         if not row or not chunk:
             raise KeyError(f'Diff chunk not found: {row_id}/{chunk_id}')
-        prev_context, next_context = _get_row_context(diff_rows, row_index)
+        resolved.append({
+            'rowId': row_id,
+            'chunkId': chunk_id,
+            'decision': decision,
+            'row': row,
+            'chunk': chunk,
+            'rowIndex': row_index,
+        })
         if chunk['kind'] == 'replace':
+            row_decisions.setdefault(row_id, {})[chunk_id] = decision
+
+    saved_decisions = {
+        (item['rowId'], item['chunkId']): item['decision'] for item in resolved
+    }
+    required = _complete_decision_keys(diff_rows)
+    if required and required.issubset(saved_decisions):
+        return {
+            'content': _materialize_complete_document(
+                base_text, candidate_text, diff_rows, saved_decisions
+            ),
+            'diff': diff_rows,
+        }
+
+    complete_replace_rows = {
+        row_id for row_id, saved in row_decisions.items()
+        if len(saved) == len(next(
+            item['row']['chunks'] for item in resolved if item['rowId'] == row_id
+        ))
+    }
+    content = original_content
+    applied_replace_rows = set()
+    for item in _sort_chunk_decisions(resolved):
+        row_id = item['rowId']
+        chunk_id = item['chunkId']
+        decision = item['decision']
+        row = item['row']
+        chunk = item['chunk']
+        row_index = item['rowIndex']
+        prev_context, next_context = _get_row_context(diff_rows, row_index)
+        if row_id in complete_replace_rows:
+            if row_id in applied_replace_rows:
+                continue
+            updated = _apply_complete_replace_row(
+                content, row, row_decisions[row_id],
+                prev_context=prev_context, next_context=next_context,
+            )
+            applied_replace_rows.add(row_id)
+        elif chunk['kind'] == 'replace':
             updated = _apply_replace_chunk(content, chunk, decision, row, prev_context=prev_context, next_context=next_context)
         else:
             updated = _apply_line_chunk(content, chunk, decision, row)

@@ -11,7 +11,7 @@
   function canReview(proposal) {
     return !!state.currentUser
       && !!state.currentProject
-      && ['owner', 'editor'].includes(state.currentProject.accessRole)
+      && ['owner', 'admin', 'editor'].includes(state.currentProject.accessRole)
       && proposal.status === 'pending'
       && holdsCurrentLock();
   }
@@ -143,9 +143,9 @@
       </div>`;
     }).join('');
     const stateLabel = file.applied
-      ? 'Saved after latest decisions'
+      ? 'Already saved as a version'
       : file.needsSave
-        ? file.decisionComplete ? 'Needs Save in editor' : 'Needs Save · decisions incomplete'
+        ? file.decisionComplete ? 'Ready to apply on close' : 'Decisions incomplete'
         : 'Decisions incomplete';
     return `<section class="proposal-file">
       <h4>${esc(file.filePath)} <span class="proposal-file-state">${esc(stateLabel)}</span></h4>
@@ -227,7 +227,7 @@
       ${reviewerEnabled || deleteEnabled ? `<div class="proposal-publish-actions">
         ${reviewerEnabled ? '<button type="button" id="btn-reject-proposal" class="danger">Reject proposal</button>' : ''}
         ${deleteEnabled ? '<button type="button" id="btn-delete-proposal" class="danger">Delete proposal</button>' : ''}
-        ${reviewerEnabled ? `<button type="button" id="btn-close-proposal-review" class="primary"${proposal.review.canClose ? '' : ' disabled'}>Close review</button>` : ''}
+        ${reviewerEnabled ? `<button type="button" id="btn-close-proposal-review" class="primary"${proposal.review.canClose ? '' : ' disabled'}>Apply & close review</button>` : ''}
       </div>` : ''}
       ${proposal.status === 'closed'
         ? `<div class="proposal-notice success">Review closed by ${esc(proposal.reviewerUsername || 'reviewer')}. Saved file versions remain in project history.</div>`
@@ -281,13 +281,20 @@
   }
 
   async function closeProposalReview() {
-    if (!window.confirm('Close this review and apply every accepted comment action? Saved file versions will not be changed.')) return;
+    if (!window.confirm('Apply accepted file changes as new versions, apply accepted comment actions, and close this review?')) return;
     try {
+      const proposalId = state.currentProposal.id;
+      const refreshFilePath = state.activeProposalReview
+        && state.activeProposalReview.proposalId === proposalId
+        && state.currentFile
+        ? state.currentFile.filePath
+        : null;
       state.currentProposal = await App.api(
         'POST',
-        `/projects/${state.currentProject.id}/proposals/${state.currentProposal.id}/close`
+        `/projects/${state.currentProject.id}/proposals/${proposalId}/close`
       );
-      await App.projects.refreshProjectState();
+      if (refreshFilePath) state.activeProposalReview = null;
+      await App.projects.refreshProjectState(refreshFilePath);
       await loadProposals(false);
       const closed = state.proposals.find((item) => item.id === state.currentProposal.id);
       if (closed) state.currentProposal = await App.api(

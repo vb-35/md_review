@@ -502,7 +502,7 @@ function markEditorChanged() {
 }
 
 function canEditCurrentProject() {
-  return !!state.currentProject && ['owner', 'editor'].includes(state.currentProject.accessRole);
+  return !!state.currentProject && ['owner', 'admin', 'editor'].includes(state.currentProject.accessRole);
 }
 
 function canCommentCurrentProject() {
@@ -510,7 +510,11 @@ function canCommentCurrentProject() {
 }
 
 function canManageShares() {
-  return !!state.currentProject && state.currentProject.isOwner;
+  return !!state.currentProject && ['owner', 'admin'].includes(state.currentProject.accessRole);
+}
+
+function canDeleteProjectFiles() {
+  return !!state.currentProject && ['owner', 'admin'].includes(state.currentProject.accessRole);
 }
 
 function hasActiveProjectLock(project = state.currentProject) {
@@ -740,6 +744,7 @@ window.App = {
     applyViewMode,
     canCommentCurrentProject,
     canEditCurrentProject,
+    canDeleteProjectFiles,
     canManageShares,
     capitalize,
     closeSidePanel,

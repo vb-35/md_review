@@ -4,6 +4,7 @@
   const $ = App.$;
   const {
     canEditCurrentProject,
+    canDeleteProjectFiles,
     canManageShares,
     esc,
     formatDate,
@@ -76,11 +77,14 @@
       <dt>Updated</dt><dd>${esc(formatDate(state.currentProject.updatedAt))}</dd>
       <dt>Commit</dt><dd>${esc(state.currentProject.currentCommitSha || 'No commits yet')}</dd>
     `;
+    const sharedBy = state.currentProject.sharedByUsername || 'unknown';
     $('#doc-access-summary').textContent = state.currentProject.isOwner
-      ? 'You own this project. You can lock, edit files, delete it, and manage sharing.'
-      : state.currentProject.accessRole === 'editor'
-        ? `You can edit this project after taking the lock. Shared by ${state.currentProject.sharedByUsername || 'unknown'}.`
-        : `You can browse files, comment on Markdown files, and download the full repo history. Shared by ${state.currentProject.sharedByUsername || 'unknown'}.`;
+      ? 'You own this project. You can edit and delete files, delete the project, and manage sharing.'
+      : state.currentProject.accessRole === 'admin'
+        ? `You can edit and delete files and manage sharing. Shared by ${sharedBy}.`
+        : state.currentProject.accessRole === 'editor'
+          ? `You can edit this project after taking the lock, but cannot delete files or manage sharing. Shared by ${sharedBy}.`
+          : `You can browse files, comment on Markdown files, and download the full repo history. Shared by ${sharedBy}.`;
 
     const fileList = $('#project-files');
     if (!state.projectFiles.length) {
@@ -95,7 +99,7 @@
           <div class="file-row-actions">
             ${item.isMarkdown ? '<button data-action="open">Open</button>' : ''}
             <button data-action="rename">Rename</button>
-            <button data-action="delete" class="danger">Delete</button>
+            ${canDeleteProjectFiles() ? '<button data-action="delete" class="danger">Delete</button>' : ''}
           </div>
         </div>
       `).join('');
@@ -176,6 +180,10 @@
       return;
     }
     if (action === 'delete') {
+      if (!canDeleteProjectFiles()) {
+        alert('Admin or owner access required to delete files.');
+        return;
+      }
       if (!window.confirm(`Delete ${item.path}?`)) return;
       const currentPath = state.currentFile && state.currentFile.filePath;
       const removesCurrent = currentPath === item.path || (currentPath && currentPath.startsWith(`${item.path}/`));

@@ -28,6 +28,8 @@ app = create_app()
 client = app.test_client()
 viewer_client = app.test_client()
 editor_client = app.test_client()
+admin_client = app.test_client()
+managed_client = app.test_client()
 other_client = app.test_client()
 
 
@@ -44,6 +46,8 @@ try:
     login(client, 'owner')
     login(viewer_client, 'viewer')
     login(editor_client, 'editor')
+    login(admin_client, 'admin')
+    login(managed_client, 'managed')
     login(other_client, 'other')
     print("PASS: login")
 
@@ -77,7 +81,57 @@ try:
     assert response.status_code == 200
     response = client.post(f'/api/projects/{project_id}/shares', json={'username': 'editor', 'role': 'editor'})
     assert response.status_code == 200
+    response = client.post(f'/api/projects/{project_id}/shares', json={'username': 'admin', 'role': 'admin'})
+    assert response.status_code == 200
+    admin_share = response.get_json()
+    assert client.post(
+        f'/api/projects/{project_id}/shares',
+        json={'username': 'managed', 'role': 'owner'},
+    ).status_code == 400
+    assert client.post(
+        f'/api/projects/{project_id}/shares',
+        json={'username': 'managed', 'role': 'unknown'},
+    ).status_code == 400
     print("PASS: share_project")
+
+    response = admin_client.get('/api/projects')
+    assert response.status_code == 200
+    assert any(item['id'] == project_id and item['accessRole'] == 'admin' for item in response.get_json())
+    response = admin_client.get(f'/api/projects/{project_id}/shares')
+    assert response.status_code == 200
+    assert {share['role'] for share in response.get_json()} == {'admin', 'editor', 'viewer'}
+    response = admin_client.post(
+        f'/api/projects/{project_id}/shares',
+        json={'username': 'managed', 'role': 'editor'},
+    )
+    assert response.status_code == 200
+    managed_share = response.get_json()
+    response = admin_client.post(
+        f'/api/projects/{project_id}/shares',
+        json={'username': 'managed', 'role': 'viewer'},
+    )
+    assert response.status_code == 200
+    assert response.get_json()['role'] == 'viewer'
+    assert admin_client.delete(
+        f"/api/projects/{project_id}/shares/{managed_share['userId']}"
+    ).status_code == 200
+    assert admin_client.post(
+        f'/api/projects/{project_id}/shares',
+        json={'username': 'owner', 'role': 'viewer'},
+    ).status_code == 400
+    assert admin_client.delete(f'/api/projects/{project_id}').status_code == 403
+    print("PASS: admin_manages_shares_but_cannot_delete_project")
+
+    response = editor_client.get(f'/api/projects/{project_id}/shares')
+    assert response.status_code == 403
+    assert editor_client.post(
+        f'/api/projects/{project_id}/shares',
+        json={'username': 'managed', 'role': 'viewer'},
+    ).status_code == 403
+    assert editor_client.delete(
+        f"/api/projects/{project_id}/shares/{admin_share['userId']}"
+    ).status_code == 403
+    print("PASS: editor_cannot_view_or_manage_shares")
 
     response = viewer_client.get('/api/projects')
     assert response.status_code == 200
@@ -99,9 +153,9 @@ try:
     response = client.post(f'/api/projects/{project_id}/lock')
     assert response.status_code == 423, response.data
     response = editor_client.delete(f'/api/projects/{project_id}/files', json={'path': '.'})
-    assert response.status_code == 400, response.data
+    assert response.status_code == 403, response.data
     response = editor_client.delete(f'/api/projects/{project_id}/files', json={'path': '.git'})
-    assert response.status_code == 400, response.data
+    assert response.status_code == 403, response.data
     assert os.path.exists(os.path.join(Config.REPO_ROOT, project['projectPath'], 'docs', 'spec.md'))
     print("PASS: atomic_lock_and_root_deletion_blocked")
 
@@ -256,8 +310,9 @@ try:
     print("PASS: rename_markdown_file")
 
     response = editor_client.delete(f'/api/projects/{project_id}/files', json={'path': 'assets/logo.svg'})
-    assert response.status_code == 200
-    print("PASS: delete_asset")
+    assert response.status_code == 403
+    assert os.path.exists(os.path.join(Config.REPO_ROOT, project['projectPath'], 'assets', 'logo.svg'))
+    print("PASS: editor_cannot_delete_asset")
 
     response = editor_client.post(f'/api/projects/{project_id}/files/versions/{versions[1]["id"]}/revert')
     assert response.status_code == 200, response.data
@@ -265,6 +320,21 @@ try:
     assert response.status_code == 200
     assert response.get_json()['content'] == '# Start\n'
     print("PASS: revert_version")
+
+    assert editor_client.delete(f'/api/projects/{project_id}/lock').status_code == 200
+    assert admin_client.post(f'/api/projects/{project_id}/lock').status_code == 200
+    response = admin_client.post(
+        f'/api/projects/{project_id}/files',
+        json={'path': 'admin/tmp.md', 'content': '# Admin\n'},
+    )
+    assert response.status_code == 201, response.data
+    response = admin_client.delete(f'/api/projects/{project_id}/files', json={'path': 'admin'})
+    assert response.status_code == 200, response.data
+    response = admin_client.delete(
+        f'/api/projects/{project_id}/files', json={'path': 'assets/logo.svg'}
+    )
+    assert response.status_code == 200, response.data
+    print("PASS: admin_edits_and_deletes_files_folders_and_assets")
 
     response = other_client.get(f'/api/projects/{project_id}')
     assert response.status_code == 404
@@ -289,7 +359,7 @@ try:
         text=True,
         stdout=subprocess.PIPE
     ).stdout.strip()
-    assert commit_count == '6'
+    assert commit_count == '8'
     with open(os.path.join(repo_root, 'docs', 'final.md'), 'r', encoding='utf-8') as handle:
         assert handle.read() == '# Start\n'
     print("PASS: download_project_repo")
@@ -297,6 +367,13 @@ try:
     response = other_client.get(f'/api/projects/{project_id}/download')
     assert response.status_code == 404
     print("PASS: outsider_download_blocked")
+
+    assert admin_client.delete(f'/api/projects/{project_id}/lock').status_code == 200
+    assert admin_client.delete(
+        f"/api/projects/{project_id}/shares/{admin_share['userId']}"
+    ).status_code == 200
+    assert admin_client.get(f'/api/projects/{project_id}').status_code == 404
+    print("PASS: admin_can_remove_own_access")
 
     response = client.delete(f'/api/projects/{project_id}')
     assert response.status_code == 200

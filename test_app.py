@@ -89,9 +89,9 @@ def test_index_exposes_repo_actions():
     assert 'font-size-select' in html
     assert 'find-replace-bar' in html
     assert 'proposal-review' in html
-    assert 'js/app.js?v=20260720c' in html
-    assert 'js/proposals.js?v=20260720c' in html
-    assert 'js/projects.js?v=20260720f' in html
+    assert 'js/app.js?v=20260722a' in html
+    assert 'js/proposals.js?v=20260722a' in html
+    assert 'js/projects.js?v=20260722a' in html
     print("PASS: index_exposes_repo_actions")
 
 
@@ -207,6 +207,99 @@ def test_apply_diff_decisions_allows_flip_and_old_version_fallback():
     print("PASS: apply_diff_decisions_allows_flip_and_old_version_fallback")
 
 
+def test_apply_diff_decisions_handles_many_chunks_on_one_line():
+    base = 'a b c d e f g h i j k l m n o p q r s t\n'
+    candidate = 'A b X c D e Y f G h Z i J k W l M n V o P q U r T\n'
+    diff = compute_diff(base, candidate)
+    added = next(row for row in diff if row['type'] == 'added')
+    choices = [
+        'accept', 'accept', 'refuse', 'accept', 'accept', 'accept', 'accept',
+        'accept', 'refuse', 'accept', 'accept', 'accept', 'accept',
+    ]
+    decisions = [
+        {
+            'rowId': added['rowId'],
+            'chunkId': chunk['chunkId'],
+            'decision': decision,
+        }
+        for chunk, decision in zip(added['chunks'], choices)
+    ]
+    expected = 'A b X c d e Y f G h Z i J k W l m n V o P q U r T\n'
+
+    assert apply_diff_decisions(base, candidate, base, decisions)['content'] == expected
+    assert apply_diff_decisions(base, candidate, candidate, decisions)['content'] == expected
+
+    print("PASS: apply_diff_decisions_handles_many_chunks_on_one_line")
+
+
+def test_apply_diff_decisions_atomically_mixes_insertions_and_deletions():
+    base = 'a b c d e f g h i j k l m n o p\n'
+    candidate = 'X6 a b d E0 f g h j k l n o p X6\n'
+    diff = compute_diff(base, candidate)
+    added = next(row for row in diff if row['type'] == 'added')
+    choices = ['refuse', 'accept', 'refuse', 'refuse', 'refuse', 'accept']
+    decisions = [
+        {
+            'rowId': added['rowId'],
+            'chunkId': chunk['chunkId'],
+            'decision': decision,
+        }
+        for chunk, decision in zip(added['chunks'], choices)
+    ]
+    expected = 'a b d e f g h i j k l m n o p X6\n'
+
+    from_base = apply_diff_decisions(base, candidate, base, decisions)['content']
+    from_candidate = apply_diff_decisions(base, candidate, candidate, decisions)['content']
+    previous = apply_diff_decisions(base, candidate, base, [
+        {
+            'rowId': added['rowId'],
+            'chunkId': chunk['chunkId'],
+            'decision': 'accept' if index % 2 else 'refuse',
+        }
+        for index, chunk in enumerate(added['chunks'])
+    ])['content']
+    from_previous_snapshot = apply_diff_decisions(
+        base, candidate, previous, decisions
+    )['content']
+
+    assert from_base == expected
+    assert from_candidate == expected
+    assert from_previous_snapshot == expected
+    print("PASS: apply_diff_decisions_atomically_mixes_insertions_and_deletions")
+
+
+def test_apply_diff_decisions_materializes_complete_multiline_review():
+    base = 'one\ntwo old\nthree\nfour\n'
+    candidate = 'added-start\none\ntwo new\nfour\nadded-end\n'
+    diff = compute_diff(base, candidate)
+    decisions = []
+    for row in diff:
+        for chunk in row.get('chunks', []):
+            if chunk['kind'] == 'replace':
+                if row['type'] != 'added':
+                    continue
+                decision = 'accept'
+            elif chunk['kind'] == 'line-add':
+                decision = 'accept' if row['line'] == 'added-end' else 'refuse'
+            else:
+                decision = 'refuse'
+            decisions.append({
+                'rowId': row['rowId'],
+                'chunkId': chunk['chunkId'],
+                'decision': decision,
+            })
+
+    expected = 'one\ntwo new\nthree\nfour\nadded-end\n'
+    previous_snapshot = 'added-start\none\ntwo old\nfour\nadded-end\n'
+
+    assert apply_diff_decisions(base, candidate, base, decisions)['content'] == expected
+    assert apply_diff_decisions(base, candidate, candidate, decisions)['content'] == expected
+    assert apply_diff_decisions(
+        base, candidate, previous_snapshot, decisions
+    )['content'] == expected
+    print("PASS: apply_diff_decisions_materializes_complete_multiline_review")
+
+
 def test_diff_aligns_inserted_blank_before_replacement():
     base = "# Method\n## Overview\nOld paragraph\n\n## Next\n"
     candidate = "# Method\n\n## Overview\n\nNew paragraph\n\n## Next\n"
@@ -239,5 +332,8 @@ if __name__ == '__main__':
     test_apply_diff_chunk_replace_and_conflict()
     test_apply_diff_chunk_line_add_remove()
     test_apply_diff_decisions_allows_flip_and_old_version_fallback()
+    test_apply_diff_decisions_handles_many_chunks_on_one_line()
+    test_apply_diff_decisions_atomically_mixes_insertions_and_deletions()
+    test_apply_diff_decisions_materializes_complete_multiline_review()
     test_diff_aligns_inserted_blank_before_replacement()
     print("ALL PASS")
