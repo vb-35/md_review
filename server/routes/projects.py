@@ -3,6 +3,7 @@ import shutil
 import tempfile
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from urllib.parse import quote
 
 from flask import Blueprint, after_this_request, current_app, jsonify, request, send_file, session
@@ -16,7 +17,9 @@ from models import (
     release_project_lock,
 )
 from utils.repo_storage import (
+    archive_title_from_filename,
     build_project_archive,
+    clone_project_repo,
     default_project_path,
     delete_project_file,
     delete_project_root,
@@ -25,12 +28,14 @@ from utils.repo_storage import (
     get_comment_file_store_dir,
     get_project_head_commit,
     git_commit_paths,
+    import_project_archive,
     list_project_tree,
     normalize_project_file_path,
     project_write_lock,
     read_project_file,
     rename_project_path,
     rename_comment_store_path,
+    repository_title_from_url,
     resolve_project_file,
     resolve_project_root,
     sanitize_asset_filename,
@@ -184,6 +189,33 @@ def insert_file_version(project_id, file_path, content, message, author_id, now,
     )
 
 
+def persist_imported_project(project_id, title, project_path, project_root, user_id, now):
+    conn = get_db()
+    conn.execute(
+        "INSERT INTO projects (id, title, project_path, owner_id, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+        (project_id, title, project_path, user_id, user_id, now)
+    )
+    head = get_project_head_commit(project_root)
+    for item in list_project_tree(project_root):
+        if item['kind'] != 'file' or not item['isMarkdown']:
+            continue
+        try:
+            content = read_project_file(project_root, item['path'])
+        except (OSError, UnicodeError, ValueError) as exc:
+            raise ValueError(
+                f"Unable to import Markdown file {item['path']}: UTF-8 text required"
+            ) from exc
+        insert_file_version(
+            project_id,
+            item['path'],
+            content,
+            'Imported repository',
+            user_id,
+            now,
+            head,
+        )
+
+
 def asset_url(project_id, file_path):
     base_path = current_app.config.get('APP_BASE_PATH', '')
     return f"{base_path}/api/projects/{project_id}/assets/{quote(file_path)}"
@@ -264,6 +296,120 @@ def create_project():
         (project_id, title, project_path, uid, uid, now)
     )
     conn.commit()
+    row = get_project_for_user(project_id, uid)
+    return jsonify(project_to_api(row)), 201
+
+
+@project_bp.route('/projects/import', methods=['POST'])
+@require_auth
+def import_project():
+    data = request.get_json() or {}
+    if data.get('projectPath') is not None:
+        return jsonify({'error': 'projectPath is managed by the server'}), 400
+    repository_url = data.get('repositoryUrl')
+    try:
+        inferred_title = repository_title_from_url(repository_url)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+    title = (data.get('title') or inferred_title).strip()
+    if not title:
+        return jsonify({'error': 'title required'}), 400
+
+    project_id = str(uuid.uuid4())
+    uid = session['user_id']
+    now = datetime.now(timezone.utc).isoformat()
+    project_path = default_project_path(project_id, title)
+    try:
+        project_root = clone_project_repo(project_path, repository_url)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    conn = get_db()
+    try:
+        persist_imported_project(
+            project_id, title, project_path, project_root, uid, now
+        )
+        conn.commit()
+    except ValueError as exc:
+        conn.rollback()
+        delete_project_root(project_path)
+        return jsonify({'error': str(exc)}), 400
+    except Exception:
+        conn.rollback()
+        delete_project_root(project_path)
+        raise
+    row = get_project_for_user(project_id, uid)
+    return jsonify(project_to_api(row)), 201
+
+
+@project_bp.route('/projects/import-archive', methods=['POST'])
+@require_auth
+def import_archive_project():
+    archive_file = request.files.get('file')
+    if not archive_file or not archive_file.filename:
+        return jsonify({'error': 'file required'}), 400
+    if request.form.get('projectPath') is not None:
+        return jsonify({'error': 'projectPath is managed by the server'}), 400
+
+    archive_name = Path(archive_file.filename.replace('\\', '/')).name
+    lowered_name = archive_name.lower()
+    if not lowered_name.endswith(('.tar.gz', '.tgz', '.zip')):
+        return jsonify({'error': 'Archive must be a .tar.gz, .tgz, or .zip file'}), 400
+    title = (request.form.get('title') or archive_title_from_filename(archive_name)).strip()
+    if not title:
+        return jsonify({'error': 'title required'}), 400
+
+    max_upload_bytes = max(1, int(current_app.config['ARCHIVE_IMPORT_MAX_UPLOAD_BYTES']))
+    archive_handle = tempfile.NamedTemporaryFile(
+        prefix='md_review_import_', suffix=Path(archive_name).suffix, delete=False
+    )
+    archive_path = archive_handle.name
+    upload_size = 0
+    upload_error = None
+    try:
+        while True:
+            chunk = archive_file.stream.read(1024 * 1024)
+            if not chunk:
+                break
+            upload_size += len(chunk)
+            if upload_size > max_upload_bytes:
+                upload_error = f'Archive exceeds {max_upload_bytes} bytes'
+                break
+            archive_handle.write(chunk)
+    finally:
+        archive_handle.close()
+    if upload_error:
+        os.unlink(archive_path)
+        return jsonify({'error': upload_error}), 413
+
+    project_id = str(uuid.uuid4())
+    uid = session['user_id']
+    now = datetime.now(timezone.utc).isoformat()
+    project_path = default_project_path(project_id, title)
+    try:
+        try:
+            project_root = import_project_archive(
+                project_path, archive_path, archive_name
+            )
+        finally:
+            os.unlink(archive_path)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    conn = get_db()
+    try:
+        persist_imported_project(
+            project_id, title, project_path, project_root, uid, now
+        )
+        conn.commit()
+    except ValueError as exc:
+        conn.rollback()
+        delete_project_root(project_path)
+        return jsonify({'error': str(exc)}), 400
+    except Exception:
+        conn.rollback()
+        delete_project_root(project_path)
+        raise
     row = get_project_for_user(project_id, uid)
     return jsonify(project_to_api(row)), 201
 

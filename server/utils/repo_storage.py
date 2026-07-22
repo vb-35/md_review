@@ -3,14 +3,18 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import tarfile
 import tempfile
+import zipfile
 from contextlib import contextmanager
 from pathlib import Path
+from urllib.parse import urlsplit
 
 COMMIT_SHA_RE = re.compile(r'^[0-9a-fA-F]{40,64}$')
 RESERVED_PROJECT_PATHS = {'.git', '.md-review'}
+SCP_REPOSITORY_URL_RE = re.compile(r'^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:(?P<path>[^\s]+)$')
 
 def slugify_filename(title):
     slug = re.sub(r'[^a-z0-9]+', '-', (title or '').strip().lower()).strip('-')
@@ -43,6 +47,46 @@ def default_project_path(project_id, title):
     root = get_projects_root()
     rel_path = root.relative_to(get_storage_root()) / dirname
     return rel_path.as_posix()
+
+
+def normalize_repository_url(repository_url):
+    repository_url = str(repository_url or '').strip()
+    if not repository_url:
+        raise ValueError('repositoryUrl required')
+    if len(repository_url) > 2048 or any(character.isspace() for character in repository_url):
+        raise ValueError('Invalid repository URL')
+
+    scp_match = SCP_REPOSITORY_URL_RE.fullmatch(repository_url)
+    if scp_match:
+        if not scp_match.group('path').strip('/'):
+            raise ValueError('Invalid repository URL')
+        return repository_url
+
+    try:
+        parsed = urlsplit(repository_url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError('Invalid repository URL') from exc
+    if parsed.scheme not in ('https', 'ssh') or not hostname or not parsed.path.strip('/'):
+        raise ValueError('Repository URL must use HTTPS or SSH')
+    if parsed.fragment or parsed.query or parsed.password:
+        raise ValueError('Repository URL cannot include credentials, query parameters, or fragments')
+    if parsed.scheme == 'https' and parsed.username:
+        raise ValueError('Repository URL cannot include credentials')
+    if port is not None and not 1 <= port <= 65535:
+        raise ValueError('Invalid repository URL')
+    return repository_url
+
+
+def repository_title_from_url(repository_url):
+    repository_url = normalize_repository_url(repository_url)
+    scp_match = SCP_REPOSITORY_URL_RE.fullmatch(repository_url)
+    path = scp_match.group('path') if scp_match else urlsplit(repository_url).path
+    title = Path(path.rstrip('/')).name
+    if title.lower().endswith('.git'):
+        title = title[:-4]
+    return title or 'Imported project'
 
 
 def resolve_project_root(project_path):
@@ -119,6 +163,251 @@ def ensure_project_repo(project_path):
         with exclude_path.open('a', encoding='utf-8') as exclude_file:
             exclude_file.write(f'{separator}.md-review/\n')
     return project_root
+
+
+def clone_project_repo(project_path, repository_url):
+    from config import Config
+
+    repository_url = normalize_repository_url(repository_url)
+    project_root = resolve_project_root(project_path)
+    if project_root.exists():
+        raise ValueError('Project destination already exists')
+    project_root.parent.mkdir(parents=True, exist_ok=True)
+    clone_env = os.environ.copy()
+    clone_env.update({
+        'GIT_ALLOW_PROTOCOL': 'https:ssh',
+        'GIT_TERMINAL_PROMPT': '0',
+    })
+    if repository_url.startswith('ssh://') or SCP_REPOSITORY_URL_RE.fullmatch(repository_url):
+        clone_env.setdefault('GIT_SSH_COMMAND', 'ssh -oBatchMode=yes')
+    timeout = max(1, int(getattr(Config, 'GIT_IMPORT_TIMEOUT_SECONDS', 120)))
+    try:
+        subprocess.run(
+            ['git', 'clone', '--no-hardlinks', '--', repository_url, str(project_root)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            env=clone_env,
+        )
+        tracked_internal = subprocess.run(
+            ['git', '-C', str(project_root), 'ls-files', '--', '.md-review'],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if tracked_internal:
+            raise ValueError('Repository uses the reserved .md-review path')
+        return ensure_project_repo(project_path)
+    except subprocess.TimeoutExpired as exc:
+        shutil.rmtree(project_root, ignore_errors=True)
+        raise ValueError(f'Repository import timed out after {timeout} seconds') from exc
+    except subprocess.CalledProcessError as exc:
+        shutil.rmtree(project_root, ignore_errors=True)
+        raise ValueError('Unable to clone repository; check the URL and server access') from exc
+    except Exception:
+        shutil.rmtree(project_root, ignore_errors=True)
+        raise
+
+
+
+def archive_title_from_filename(filename):
+    name = Path(str(filename or '').replace('\\', '/')).name
+    lowered = name.lower()
+    for suffix in ('.tar.gz', '.tgz', '.zip'):
+        if lowered.endswith(suffix):
+            name = name[:-len(suffix)]
+            break
+    return name.strip() or 'Imported project'
+
+
+def _safe_archive_parts(name):
+    name = str(name or '').replace('\\', '/')
+    if not name or '\x00' in name or name.startswith('/') or re.match(r'^[A-Za-z]:/', name):
+        raise ValueError('Archive contains an unsafe path')
+    parts = tuple(part for part in name.split('/') if part not in ('', '.'))
+    if any(part == '..' for part in parts):
+        raise ValueError('Archive contains an unsafe path')
+    return parts
+
+
+def _prepare_archive_entries(entries, max_files, max_bytes):
+    entries = [
+        entry for entry in entries
+        if entry['parts'] and entry['parts'][0] != '__MACOSX'
+    ]
+    roots = {entry['parts'][0] for entry in entries}
+    explicit_roots = {
+        entry['parts'][0]
+        for entry in entries
+        if entry['is_dir'] and len(entry['parts']) == 1
+    }
+    strip_root = next(iter(roots)) if len(roots) == 1 and roots <= explicit_roots else None
+
+    prepared = []
+    seen = {}
+    file_count = 0
+    total_size = 0
+    for entry in entries:
+        parts = entry['parts'][1:] if strip_root else entry['parts']
+        if not parts:
+            continue
+        if parts[0] == '.md-review' and len(parts) > 1 and parts[1] != 'comments':
+            raise ValueError('Archive uses a reserved .md-review path')
+        path = '/'.join(parts)
+        previous = seen.get(path)
+        if previous is not None:
+            if previous and entry['is_dir']:
+                continue
+            raise ValueError(f'Archive contains duplicate path: {path}')
+        seen[path] = entry['is_dir']
+        if not entry['is_dir']:
+            file_count += 1
+            total_size += entry['size']
+        prepared.append({**entry, 'parts': parts, 'path': path})
+
+    file_paths = {path for path, is_dir in seen.items() if not is_dir}
+    for path in seen:
+        parts = path.split('/')
+        if any('/'.join(parts[:index]) in file_paths for index in range(1, len(parts))):
+            raise ValueError(f'Archive path conflicts with a file: {path}')
+    if file_count > max_files:
+        raise ValueError(f'Archive contains more than {max_files} files')
+    if total_size > max_bytes:
+        raise ValueError(f'Archive expands beyond {max_bytes} bytes')
+    return prepared
+
+
+def _extract_archive_entries(project_root, entries, open_entry, max_bytes):
+    extracted_bytes = 0
+    for entry in entries:
+        destination = project_root.joinpath(*entry['parts'])
+        if entry['is_dir']:
+            destination.mkdir(parents=True, exist_ok=True)
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with open_entry(entry['source']) as source, destination.open('wb') as target:
+            while True:
+                chunk = source.read(1024 * 1024)
+                if not chunk:
+                    break
+                extracted_bytes += len(chunk)
+                if extracted_bytes > max_bytes:
+                    raise ValueError(f'Archive expands beyond {max_bytes} bytes')
+                target.write(chunk)
+        if entry['mode'] & 0o111:
+            destination.chmod(destination.stat().st_mode | 0o111)
+
+
+def _sanitize_archived_git_repo(project_root):
+    git_dir = project_root / '.git'
+    if not git_dir.is_dir():
+        raise ValueError('Archived .git path must be a directory')
+    shutil.rmtree(git_dir / 'hooks', ignore_errors=True)
+    for relative_path in (
+        'config.worktree',
+        'index',
+        'objects/info/alternates',
+        'objects/info/http-alternates',
+    ):
+        path = git_dir / relative_path
+        if path.exists():
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+    (git_dir / 'config').write_text(
+        '[core]\n'
+        '\trepositoryformatversion = 0\n'
+        '\tfilemode = true\n'
+        '\tbare = false\n'
+        '\tlogallrefupdates = true\n',
+        encoding='utf-8',
+    )
+    result = subprocess.run(
+        ['git', '-C', str(project_root), 'rev-parse', '--is-inside-work-tree'],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0 or result.stdout.strip() != 'true':
+        raise ValueError('Archive does not contain a valid Git worktree')
+    head = get_project_head_commit(project_root)
+    if head:
+        subprocess.run(
+            ['git', '-C', str(project_root), 'reset', '--mixed', 'HEAD'],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
+
+def import_project_archive(project_path, archive_path, archive_name=''):
+    from config import Config
+
+    project_root = resolve_project_root(project_path)
+    if project_root.exists():
+        raise ValueError('Project destination already exists')
+    project_root.parent.mkdir(parents=True, exist_ok=True)
+    project_root.mkdir()
+    max_files = max(1, int(getattr(Config, 'ARCHIVE_IMPORT_MAX_FILES', 10000)))
+    max_bytes = max(1, int(getattr(Config, 'ARCHIVE_IMPORT_MAX_EXTRACTED_BYTES', 500 * 1024 * 1024)))
+    archive_path = Path(archive_path)
+    lowered_name = str(archive_name or archive_path.name).lower()
+
+    try:
+        if lowered_name.endswith('.zip'):
+            with zipfile.ZipFile(archive_path) as archive:
+                raw_entries = []
+                for info in archive.infolist():
+                    mode = (info.external_attr >> 16) & 0xFFFF
+                    if stat.S_ISLNK(mode):
+                        raise ValueError('Archive links are not supported')
+                    raw_entries.append({
+                        'source': info,
+                        'parts': _safe_archive_parts(info.filename),
+                        'is_dir': info.is_dir(),
+                        'size': info.file_size,
+                        'mode': mode,
+                    })
+                entries = _prepare_archive_entries(raw_entries, max_files, max_bytes)
+                _extract_archive_entries(project_root, entries, archive.open, max_bytes)
+        elif lowered_name.endswith(('.tar.gz', '.tgz')):
+            with tarfile.open(archive_path, 'r:gz') as archive:
+                raw_entries = []
+                for member in archive.getmembers():
+                    if not member.isdir() and not member.isfile():
+                        raise ValueError('Archive links and special files are not supported')
+                    raw_entries.append({
+                        'source': member,
+                        'parts': _safe_archive_parts(member.name),
+                        'is_dir': member.isdir(),
+                        'size': member.size,
+                        'mode': member.mode,
+                    })
+                entries = _prepare_archive_entries(raw_entries, max_files, max_bytes)
+                _extract_archive_entries(
+                    project_root,
+                    entries,
+                    lambda member: archive.extractfile(member),
+                    max_bytes,
+                )
+        else:
+            raise ValueError('Archive must be a .tar.gz, .tgz, or .zip file')
+
+        git_dir = project_root / '.git'
+        if git_dir.exists():
+            _sanitize_archived_git_repo(project_root)
+        project_root = ensure_project_repo(project_path)
+        git_commit_paths(project_root, [], 'Import archive')
+        return project_root
+    except (tarfile.TarError, zipfile.BadZipFile) as exc:
+        shutil.rmtree(project_root, ignore_errors=True)
+        raise ValueError('Invalid or corrupted project archive') from exc
+    except Exception:
+        shutil.rmtree(project_root, ignore_errors=True)
+        raise
 
 
 def build_project_archive(project_root, archive_path, root_name=None):

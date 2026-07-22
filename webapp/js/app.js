@@ -469,6 +469,23 @@ async function uploadProjectAsset(projectId, file, dirPath = '') {
   return data;
 }
 
+async function uploadProjectArchive(file, title = '') {
+  const body = new FormData();
+  body.append('file', file);
+  if (title) body.append('title', title);
+  const res = await fetch(API + '/projects/import-archive', {
+    method: 'POST',
+    credentials: 'include',
+    body
+  });
+  const contentType = res.headers.get('content-type') || '';
+  const data = contentType.includes('application/json')
+    ? await res.json()
+    : { error: 'Expected JSON response from archive import' };
+  if (!res.ok) throw new Error(data.error || 'Archive import failed');
+  return data;
+}
+
 function esc(value) {
   const div = document.createElement('div');
   div.textContent = value || '';
@@ -830,6 +847,54 @@ function wireEvents() {
     const project = await api('POST', '/projects', { title });
     await window.App.projects.loadProjects();
     await window.App.projects.openProjectDetail(project.id);
+  });
+
+  $('#btn-import-repo').addEventListener('click', async () => {
+    const repositoryUrl = window.prompt('Repository URL (HTTPS or SSH)');
+    if (!repositoryUrl) return;
+    const title = window.prompt('Project name (leave blank to use the repository name)', '');
+    if (title === null) return;
+    const button = $('#btn-import-repo');
+    button.disabled = true;
+    button.textContent = 'Importing…';
+    try {
+      const project = await api('POST', '/projects/import', {
+        repositoryUrl: repositoryUrl.trim(),
+        title: title.trim()
+      });
+      await window.App.projects.loadProjects();
+      await window.App.projects.openProjectDetail(project.id);
+    } catch (error) {
+      window.alert(error.message);
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Import Repo';
+    }
+  });
+
+  $('#btn-import-archive').addEventListener('click', () => {
+    $('#import-archive-input').click();
+  });
+
+  $('#import-archive-input').addEventListener('change', async (event) => {
+    const file = event.target.files[0];
+    event.target.value = '';
+    if (!file) return;
+    const title = window.prompt('Project name (leave blank to use the archive name)', '');
+    if (title === null) return;
+    const button = $('#btn-import-archive');
+    button.disabled = true;
+    button.textContent = 'Importing…';
+    try {
+      const project = await uploadProjectArchive(file, title.trim());
+      await window.App.projects.loadProjects();
+      await window.App.projects.openProjectDetail(project.id);
+    } catch (error) {
+      window.alert(error.message);
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Import Archive';
+    }
   });
 
   $('#btn-delete-doc').addEventListener('click', async () => {

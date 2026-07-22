@@ -12,3 +12,7 @@ class Config:
     PROJECTS_DIR = os.environ.get('PROJECTS_DIR', '.md-review/projects').strip() or '.md-review/projects'
     COMMENTS_DIR = os.environ.get('COMMENTS_DIR', '.md-review/comments').strip() or '.md-review/comments'
     PROJECT_LOCK_TTL_SECONDS = int(os.environ.get('PROJECT_LOCK_TTL_SECONDS', '300'))
+    GIT_IMPORT_TIMEOUT_SECONDS = int(os.environ.get('GIT_IMPORT_TIMEOUT_SECONDS', '120'))
+    ARCHIVE_IMPORT_MAX_UPLOAD_BYTES = int(os.environ.get('ARCHIVE_IMPORT_MAX_UPLOAD_BYTES', str(100 * 1024 * 1024)))
+    ARCHIVE_IMPORT_MAX_EXTRACTED_BYTES = int(os.environ.get('ARCHIVE_IMPORT_MAX_EXTRACTED_BYTES', str(500 * 1024 * 1024)))
+    ARCHIVE_IMPORT_MAX_FILES = int(os.environ.get('ARCHIVE_IMPORT_MAX_FILES', '10000'))

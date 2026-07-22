@@ -52,6 +52,9 @@ tail -f data/server.log
 
 ## Notes
 
+- Use **Import Archive** to restore a project downloaded from MD Review as a .tar.gz backup, including its Git history and comment data. Ordinary .zip project folders are also supported.
+- Use **Import Repo** on the projects dashboard to clone an HTTPS or SSH Git URL as a project. The clone keeps its Git history and origin; URLs containing credentials and repositories using the reserved .md-review path are rejected.
+- Repository imports time out after 120 seconds by default. Set GIT_IMPORT_TIMEOUT_SECONDS to change the limit.
 - Default port: `18080`
 - App data lives under `data/`
 - If `md-reviewctl` is run from outside the repo, set `MD_REVIEW_ROOT` to the project root

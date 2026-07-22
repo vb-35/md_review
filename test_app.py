@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Tests for MD Review app."""
+import io
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
+import zipfile
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
 
@@ -17,6 +21,13 @@ from run import create_app
 from routes.proposals import annotate_diff_decisions
 from utils.diff import apply_diff_chunk, apply_diff_decisions, compute_diff
 from utils.renderer import markdown_to_html
+from utils.repo_storage import (
+    ensure_project_repo,
+    git_commit_paths,
+    normalize_repository_url,
+    repository_title_from_url,
+    write_project_file,
+)
 
 APP = create_app()
 CLIENT = APP.test_client()
@@ -89,15 +100,157 @@ def test_index_exposes_repo_actions():
     assert response.status_code == 200
     html = response.get_data(as_text=True)
     assert 'btn-download-repo' in html
+    assert 'btn-import-repo' in html
+    assert 'btn-import-archive' in html
     assert 'replace-shortcut-select' in html
     assert 'font-size-select' in html
     assert 'find-replace-bar' in html
     assert 'proposal-review' in html
-    assert 'js/app.js?v=20260722a' in html
+    assert 'js/app.js?v=20260722c' in html
     assert 'js/proposals.js?v=20260722a' in html
     assert 'js/projects.js?v=20260722c' in html
     assert 'js/comments.js?v=20260722c' in html
     print("PASS: index_exposes_repo_actions")
+
+
+def test_import_project():
+    assert normalize_repository_url('https://example.com/team/docs.git') == 'https://example.com/team/docs.git'
+    assert normalize_repository_url('git@example.com:team/docs.git') == 'git@example.com:team/docs.git'
+    assert repository_title_from_url('ssh://git@example.com/team/docs.git') == 'docs'
+    for invalid_url in ('', '/srv/private/repo', 'file:///srv/private/repo', 'https://token@example.com/team/docs.git'):
+        try:
+            normalize_repository_url(invalid_url)
+            raise AssertionError(f'{invalid_url!r} should be rejected')
+        except ValueError:
+            pass
+
+    assert CLIENT.post('/api/auth/login', json={'username': 'importer'}).status_code == 200
+    def fake_clone(project_path, repository_url):
+        project_root = ensure_project_repo(project_path)
+        write_project_file(project_root, 'README.md', '# Imported\n')
+        git_commit_paths(project_root, ['README.md'], 'Initial import')
+        return project_root
+
+    with mock.patch('routes.projects.clone_project_repo') as clone:
+        clone.side_effect = fake_clone
+        response = CLIENT.post('/api/projects/import', json={
+            'repositoryUrl': 'https://example.com/team/docs.git',
+        })
+    assert response.status_code == 201, response.data
+    project = response.get_json()
+    assert project['title'] == 'docs'
+    assert project['currentCommitSha']
+    clone.assert_called_once_with(project['projectPath'], 'https://example.com/team/docs.git')
+    versions = CLIENT.get(
+        f"/api/projects/{project['id']}/files/versions?path=README.md"
+    ).get_json()
+    assert len(versions) == 1
+    assert versions[0]['message'] == 'Imported repository'
+    imported_version = CLIENT.get(
+        f"/api/projects/{project['id']}/files/versions/{versions[0]['id']}?path=README.md"
+    ).get_json()
+    assert imported_version['content'] == '# Imported\n'
+    assert CLIENT.post('/api/projects/import', json={'repositoryUrl': 'file:///etc'}).status_code == 400
+    assert CLIENT.post('/api/projects/import', json={
+        'repositoryUrl': 'https://example.com/team/docs.git',
+        'projectPath': '.',
+    }).status_code == 400
+    assert CLIENT.delete(f"/api/projects/{project['id']}").status_code == 200
+    print("PASS: import_project")
+
+
+def test_import_archive_project():
+    source_root = tempfile.mkdtemp(prefix='md_review_archive_source_')
+    try:
+        subprocess.run(['git', '-C', source_root, 'init'], check=True, capture_output=True)
+        readme_path = os.path.join(source_root, 'README.md')
+        with open(readme_path, 'w', encoding='utf-8') as handle:
+            handle.write('# One\n')
+        subprocess.run(['git', '-C', source_root, 'add', 'README.md'], check=True)
+        subprocess.run([
+            'git', '-C', source_root,
+            '-c', 'user.name=Archive Test',
+            '-c', 'user.email=archive@example.invalid',
+            'commit', '-m', 'First',
+        ], check=True, capture_output=True)
+        with open(readme_path, 'w', encoding='utf-8') as handle:
+            handle.write('# Two\n')
+        with open(os.path.join(source_root, 'figure.txt'), 'w', encoding='utf-8') as handle:
+            handle.write('asset')
+        subprocess.run(['git', '-C', source_root, 'add', 'README.md', 'figure.txt'], check=True)
+        subprocess.run([
+            'git', '-C', source_root,
+            '-c', 'user.name=Archive Test',
+            '-c', 'user.email=archive@example.invalid',
+            'commit', '-m', 'Second',
+        ], check=True, capture_output=True)
+        comments_dir = os.path.join(source_root, '.md-review', 'comments')
+        os.makedirs(comments_dir)
+        with open(os.path.join(comments_dir, 'backup-marker.json'), 'w', encoding='utf-8') as handle:
+            handle.write('{}')
+
+        archive_bytes = io.BytesIO()
+        with tarfile.open(fileobj=archive_bytes, mode='w:gz') as archive:
+            archive.add(source_root, arcname='paper-export')
+        archive_bytes.seek(0)
+        response = CLIENT.post('/api/projects/import-archive', data={
+            'file': (archive_bytes, 'paper-export.tar.gz'),
+            'title': 'Restored Paper',
+        })
+        assert response.status_code == 201, response.data
+        project = response.get_json()
+        project_root = os.path.join(Config.REPO_ROOT, project['projectPath'])
+        commit_count = subprocess.run(
+            ['git', '-C', project_root, 'rev-list', '--count', 'HEAD'],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert commit_count == '2'
+        assert not os.path.exists(os.path.join(project_root, '.git', 'hooks'))
+        assert os.path.exists(os.path.join(
+            project_root, '.md-review', 'comments', 'backup-marker.json'
+        ))
+        content = CLIENT.get(
+            f"/api/projects/{project['id']}/files/content?path=README.md"
+        ).get_json()
+        assert content['content'] == '# Two\n'
+        versions = CLIENT.get(
+            f"/api/projects/{project['id']}/files/versions?path=README.md"
+        ).get_json()
+        assert len(versions) == 1
+        assert CLIENT.delete(f"/api/projects/{project['id']}").status_code == 200
+    finally:
+        shutil.rmtree(source_root, ignore_errors=True)
+
+    zip_bytes = io.BytesIO()
+    with zipfile.ZipFile(zip_bytes, 'w') as archive:
+        archive.writestr('notes-folder/', '')
+        archive.writestr('notes-folder/README.md', '# Notes\n')
+        archive.writestr('notes-folder/assets/figure.txt', 'asset')
+    zip_bytes.seek(0)
+    response = CLIENT.post('/api/projects/import-archive', data={
+        'file': (zip_bytes, 'notes.zip'),
+    })
+    assert response.status_code == 201, response.data
+    project = response.get_json()
+    assert project['title'] == 'notes'
+    files = CLIENT.get(f"/api/projects/{project['id']}/files").get_json()['items']
+    paths = {item['path'] for item in files}
+    assert 'README.md' in paths
+    assert 'assets/figure.txt' in paths
+    assert all(not path.startswith('notes-folder/') for path in paths)
+    assert CLIENT.delete(f"/api/projects/{project['id']}").status_code == 200
+
+    unsafe_zip = io.BytesIO()
+    with zipfile.ZipFile(unsafe_zip, 'w') as archive:
+        archive.writestr('../escape.md', 'nope')
+    unsafe_zip.seek(0)
+    response = CLIENT.post('/api/projects/import-archive', data={
+        'file': (unsafe_zip, 'unsafe.zip'),
+    })
+    assert response.status_code == 400
+    print("PASS: import_archive_project")
 
 
 def test_find_replace_js_helpers():
@@ -330,6 +483,8 @@ if __name__ == '__main__':
     test_identifier_login_flow()
     test_invalid_identifier_rejected()
     test_index_exposes_repo_actions()
+    test_import_project()
+    test_import_archive_project()
     test_find_replace_js_helpers()
     test_comments_js_helpers()
     test_diff_and_renderer()
