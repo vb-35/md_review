@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for MD Review app."""
 import io
+import json
 import os
 import shutil
 import subprocess
@@ -173,6 +174,13 @@ def test_import_archive_project():
             '-c', 'user.email=archive@example.invalid',
             'commit', '-m', 'First',
         ], check=True, capture_output=True)
+        first_commit = subprocess.run(
+            ['git', '-C', source_root, 'rev-parse', 'HEAD'],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
         with open(readme_path, 'w', encoding='utf-8') as handle:
             handle.write('# Two\n')
         with open(os.path.join(source_root, 'figure.txt'), 'w', encoding='utf-8') as handle:
@@ -184,42 +192,87 @@ def test_import_archive_project():
             '-c', 'user.email=archive@example.invalid',
             'commit', '-m', 'Second',
         ], check=True, capture_output=True)
-        comments_dir = os.path.join(source_root, '.md-review', 'comments')
-        os.makedirs(comments_dir)
-        with open(os.path.join(comments_dir, 'backup-marker.json'), 'w', encoding='utf-8') as handle:
-            handle.write('{}')
 
-        archive_bytes = io.BytesIO()
-        with tarfile.open(fileobj=archive_bytes, mode='w:gz') as archive:
+        comments_dir = os.path.join(source_root, '.md-review', 'comments', 'README.md')
+        os.makedirs(comments_dir)
+        with open(
+            os.path.join(comments_dir, f'{first_commit}.json'), 'w', encoding='utf-8'
+        ) as handle:
+            json.dump({
+                'filePath': 'README.md',
+                'commitSha': first_commit,
+                'threads': [{
+                    'id': 'restored-thread',
+                    'projectId': 'original-project-id',
+                    'filePath': 'README.md',
+                    'commitSha': first_commit,
+                    'createdAt': '2026-01-01T00:00:00+00:00',
+                    'comments': [{
+                        'id': 'restored-comment',
+                        'body': 'Preserve this review comment',
+                    }],
+                }],
+            }, handle)
+
+        tar_bytes = io.BytesIO()
+        with tarfile.open(fileobj=tar_bytes, mode='w:gz') as archive:
             archive.add(source_root, arcname='paper-export')
-        archive_bytes.seek(0)
-        response = CLIENT.post('/api/projects/import-archive', data={
-            'file': (archive_bytes, 'paper-export.tar.gz'),
+        tar_bytes.seek(0)
+
+        # Deliberately omit directory records, as many ZIP creators do.
+        app_zip_bytes = io.BytesIO()
+        with zipfile.ZipFile(app_zip_bytes, 'w') as archive:
+            for root, _, filenames in os.walk(source_root):
+                for filename in filenames:
+                    source_path = os.path.join(root, filename)
+                    relative_path = os.path.relpath(source_path, source_root)
+                    archive.write(source_path, f'paper-export/{relative_path}')
+        app_zip_bytes.seek(0)
+
+        def assert_restored(response):
+            assert response.status_code == 201, response.data
+            project = response.get_json()
+            project_root = os.path.join(Config.REPO_ROOT, project['projectPath'])
+            commit_count = subprocess.run(
+                ['git', '-C', project_root, 'rev-list', '--count', 'HEAD'],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            assert commit_count == '2'
+            assert not os.path.exists(os.path.join(project_root, '.git', 'hooks'))
+            assert os.path.exists(os.path.join(
+                project_root, '.md-review', 'comments', 'README.md', f'{first_commit}.json'
+            ))
+            content = CLIENT.get(
+                f"/api/projects/{project['id']}/files/content?path=README.md"
+            ).get_json()
+            assert content['content'] == '# Two\n'
+            versions = CLIENT.get(
+                f"/api/projects/{project['id']}/files/versions?path=README.md"
+            ).get_json()
+            assert len(versions) == 2
+            assert {version['message'] for version in versions} == {'First', 'Second'}
+            threads = CLIENT.get(
+                f"/api/projects/{project['id']}/threads"
+                f"?filePath=README.md&commitSha={project['currentCommitSha']}"
+            ).get_json()
+            assert len(threads) == 1
+            assert threads[0]['projectId'] == project['id']
+            assert threads[0]['comments'][0]['body'] == 'Preserve this review comment'
+            return project
+
+        tar_project = assert_restored(CLIENT.post('/api/projects/import-archive', data={
+            'file': (tar_bytes, 'paper-export.tar.gz'),
             'title': 'Restored Paper',
-        })
-        assert response.status_code == 201, response.data
-        project = response.get_json()
-        project_root = os.path.join(Config.REPO_ROOT, project['projectPath'])
-        commit_count = subprocess.run(
-            ['git', '-C', project_root, 'rev-list', '--count', 'HEAD'],
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip()
-        assert commit_count == '2'
-        assert not os.path.exists(os.path.join(project_root, '.git', 'hooks'))
-        assert os.path.exists(os.path.join(
-            project_root, '.md-review', 'comments', 'backup-marker.json'
-        ))
-        content = CLIENT.get(
-            f"/api/projects/{project['id']}/files/content?path=README.md"
-        ).get_json()
-        assert content['content'] == '# Two\n'
-        versions = CLIENT.get(
-            f"/api/projects/{project['id']}/files/versions?path=README.md"
-        ).get_json()
-        assert len(versions) == 1
-        assert CLIENT.delete(f"/api/projects/{project['id']}").status_code == 200
+        }))
+        assert CLIENT.delete(f"/api/projects/{tar_project['id']}").status_code == 200
+
+        zip_project = assert_restored(CLIENT.post('/api/projects/import-archive', data={
+            'file': (app_zip_bytes, 'paper-export.zip'),
+            'title': 'Restored ZIP',
+        }))
+        assert CLIENT.delete(f"/api/projects/{zip_project['id']}").status_code == 200
     finally:
         shutil.rmtree(source_root, ignore_errors=True)
 

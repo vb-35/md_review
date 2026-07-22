@@ -243,7 +243,15 @@ def _prepare_archive_entries(entries, max_files, max_bytes):
         for entry in entries
         if entry['is_dir'] and len(entry['parts']) == 1
     }
-    strip_root = next(iter(roots)) if len(roots) == 1 and roots <= explicit_roots else None
+    # ZIP creators commonly omit directory entries entirely. A single shared
+    # first component still represents the exported project wrapper when every
+    # archived item is below it.
+    has_wrapped_files = bool(entries) and all(len(entry['parts']) > 1 for entry in entries)
+    strip_root = (
+        next(iter(roots))
+        if len(roots) == 1 and (roots <= explicit_roots or has_wrapped_files)
+        else None
+    )
 
     prepared = []
     seen = {}
@@ -408,6 +416,82 @@ def import_project_archive(project_path, archive_path, archive_name=''):
     except Exception:
         shutil.rmtree(project_root, ignore_errors=True)
         raise
+
+
+def list_project_file_history(project_root, file_path):
+    # Return UTF-8 versions of one file in chronological Git order.
+    project_root = Path(project_root).resolve()
+    file_path = normalize_project_file_path(file_path)
+    result = subprocess.run(
+        [
+            'git', '-C', str(project_root), 'log', '--reverse',
+            '--format=%H%x00%cI%x00%s', '--', file_path,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    history = []
+    for line in result.stdout.splitlines():
+        parts = line.split('\x00', 2)
+        if len(parts) != 3:
+            continue
+        commit_sha, created_at, message = parts
+        content = subprocess.run(
+            ['git', '-C', str(project_root), 'show', f'{commit_sha}:{file_path}'],
+            check=False,
+            capture_output=True,
+        )
+        if content.returncode != 0:
+            continue
+        try:
+            decoded_content = content.stdout.decode('utf-8')
+        except UnicodeDecodeError:
+            continue
+        history.append({
+            'commitSha': commit_sha,
+            'createdAt': created_at,
+            'message': message or 'Imported repository',
+            'content': decoded_content,
+        })
+    return history
+
+
+def rebind_imported_comment_project(project_root, project_id):
+    # Associate restored comment threads with their newly assigned project ID.
+    comments_root = get_comments_root(project_root)
+    if not comments_root.exists():
+        return 0
+    rebound = 0
+    for store_path in comments_root.rglob('*.json'):
+        try:
+            with store_path.open('r', encoding='utf-8') as handle:
+                payload = json.load(handle)
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise ValueError(f'Invalid comment data in {store_path.name}') from exc
+        if not isinstance(payload, dict):
+            raise ValueError(f'Invalid comment data in {store_path.name}')
+        threads = payload.get('threads', [])
+        if not isinstance(threads, list):
+            raise ValueError(f'Invalid comment data in {store_path.name}')
+        changed = False
+        for thread in threads:
+            if not isinstance(thread, dict):
+                raise ValueError(f'Invalid comment data in {store_path.name}')
+            if thread.get('projectId') != project_id:
+                thread['projectId'] = project_id
+                changed = True
+                rebound += 1
+        if not changed:
+            continue
+        with tempfile.NamedTemporaryFile(
+            'w', delete=False, dir=store_path.parent, encoding='utf-8'
+        ) as handle:
+            json.dump(payload, handle, indent=2)
+            handle.write('\n')
+            temporary_path = handle.name
+        os.replace(temporary_path, store_path)
+    return rebound
 
 
 def build_project_archive(project_root, archive_path, root_name=None):

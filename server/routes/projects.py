@@ -29,10 +29,12 @@ from utils.repo_storage import (
     get_project_head_commit,
     git_commit_paths,
     import_project_archive,
+    list_project_file_history,
     list_project_tree,
     normalize_project_file_path,
     project_write_lock,
     read_project_file,
+    rebind_imported_comment_project,
     rename_project_path,
     rename_comment_store_path,
     repository_title_from_url,
@@ -189,7 +191,9 @@ def insert_file_version(project_id, file_path, content, message, author_id, now,
     )
 
 
-def persist_imported_project(project_id, title, project_path, project_root, user_id, now):
+def persist_imported_project(
+    project_id, title, project_path, project_root, user_id, now, include_history=False
+):
     conn = get_db()
     conn.execute(
         "INSERT INTO projects (id, title, project_path, owner_id, updated_by, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
@@ -205,15 +209,24 @@ def persist_imported_project(project_id, title, project_path, project_root, user
             raise ValueError(
                 f"Unable to import Markdown file {item['path']}: UTF-8 text required"
             ) from exc
-        insert_file_version(
-            project_id,
-            item['path'],
-            content,
-            'Imported repository',
-            user_id,
-            now,
-            head,
-        )
+        history = list_project_file_history(project_root, item['path']) if include_history else []
+        if not history:
+            history = [{
+                'content': content,
+                'message': 'Imported repository',
+                'createdAt': now,
+                'commitSha': head,
+            }]
+        for version in history:
+            insert_file_version(
+                project_id,
+                item['path'],
+                version['content'],
+                version['message'],
+                user_id,
+                version['createdAt'],
+                version['commitSha'],
+            )
 
 
 def asset_url(project_id, file_path):
@@ -398,8 +411,9 @@ def import_archive_project():
 
     conn = get_db()
     try:
+        rebind_imported_comment_project(project_root, project_id)
         persist_imported_project(
-            project_id, title, project_path, project_root, uid, now
+            project_id, title, project_path, project_root, uid, now, include_history=True
         )
         conn.commit()
     except ValueError as exc:
