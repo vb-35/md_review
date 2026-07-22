@@ -512,7 +512,7 @@ function insertAtCursor(text) {
 
 function markEditorChanged() {
   state.editing = true;
-  updateEditorPermissions();
+  updateSaveButton();
   if (window.App && window.App.preview.schedulePreview) {
     window.App.preview.schedulePreview();
   }
@@ -661,8 +661,7 @@ function updateHeader() {
 function updateEditorPermissions() {
   const canEdit = canEditCurrentProject();
   const lockDisabled = !state.currentProject || !canEdit || (hasActiveProjectLock() && !holdsCurrentLock());
-  const saveEnabled = !!state.currentFile && canEdit && holdsCurrentLock() && state.editing;
-  $('#btn-save').disabled = !saveEnabled;
+  updateSaveButton();
   $('#btn-lock').disabled = lockDisabled;
   $('#btn-upload-image').disabled = !state.currentFile || !canEdit || !holdsCurrentLock();
   if (window.App.editor && window.App.editor.setEditable) {
@@ -677,9 +676,17 @@ function updateEditorPermissions() {
   } else {
     $('#btn-lock').textContent = 'Lock';
   }
-  if (window.App.findReplace && window.App.findReplace.refreshMatches) {
-    window.App.findReplace.refreshMatches();
+  if (window.App.findReplace && window.App.findReplace.refreshStatus) {
+    window.App.findReplace.refreshStatus();
   }
+}
+
+function updateSaveButton() {
+  const saveEnabled = !!state.currentFile
+    && canEditCurrentProject()
+    && holdsCurrentLock()
+    && state.editing;
+  $('#btn-save').disabled = !saveEnabled;
 }
 
 function stopLockHeartbeat() {

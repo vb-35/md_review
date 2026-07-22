@@ -63,6 +63,10 @@
     updateStatus(focusActiveMatch(syncSearchQuery()));
   }
 
+  function refreshStatus() {
+    updateStatus(readStatus());
+  }
+
   function setMode(mode) {
     state.findReplace.mode = mode === 'replace' ? 'replace' : 'find';
     $('#find-replace-bar').dataset.mode = state.findReplace.mode;
@@ -182,6 +186,7 @@
     handleEditorUpdate,
     handleGlobalShortcut,
     openToolbar,
-    refreshMatches
+    refreshMatches,
+    refreshStatus
   };
 })(typeof window !== 'undefined' ? window : globalThis);

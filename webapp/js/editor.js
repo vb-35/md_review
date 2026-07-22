@@ -311,7 +311,9 @@ function setValue(value) {
 }
 
 function setEditable(nextEditable) {
-  editable = !!nextEditable;
+  const nextValue = !!nextEditable;
+  if (nextValue === editable) return;
+  editable = nextValue;
   const currentView = requireView();
   currentView.dispatch({
     effects: [
