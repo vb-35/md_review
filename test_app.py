@@ -339,6 +339,20 @@ def test_comments_js_helpers():
     print("PASS: comments_js_helpers")
 
 
+def test_preview_js_helpers():
+    if not shutil.which('node'):
+        print("SKIP: preview_js_helpers (node not installed)")
+        return
+    result = subprocess.run(
+        ['node', os.path.join(os.path.dirname(__file__), 'webapp/js/preview.test.js')],
+        check=True,
+        capture_output=True,
+        text=True
+    )
+    assert 'PASS: preview project image paths' in result.stdout
+    print("PASS: preview_js_helpers")
+
+
 def test_diff_and_renderer():
     diff = compute_diff("alpha beta\n", "alpha gamma\n")
     removed = next(row for row in diff if row['type'] == 'removed')
@@ -545,6 +559,7 @@ if __name__ == '__main__':
     test_import_archive_project()
     test_find_replace_js_helpers()
     test_comments_js_helpers()
+    test_preview_js_helpers()
     test_diff_and_renderer()
     test_proposal_decision_annotates_rendered_diff()
     test_apply_diff_chunk_replace_and_conflict()

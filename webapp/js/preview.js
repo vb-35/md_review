@@ -71,6 +71,58 @@
     });
   }
 
+  function resolveProjectImageUrl(source, projectId, filePath, apiBase) {
+    if (!source || !projectId || !filePath || !apiBase) return source;
+    const value = source.trim();
+    if (
+      !value
+      || value.startsWith('/')
+      || value.startsWith('#')
+      || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(value)
+    ) {
+      return source;
+    }
+
+    const suffixIndex = value.search(/[?#]/);
+    const relativePath = suffixIndex === -1 ? value : value.slice(0, suffixIndex);
+    const suffix = suffixIndex === -1 ? '' : value.slice(suffixIndex);
+    const segments = filePath.split('/').slice(0, -1);
+
+    for (const rawSegment of relativePath.split('/')) {
+      let segment;
+      try {
+        segment = decodeURIComponent(rawSegment);
+      } catch {
+        return source;
+      }
+      if (!segment || segment === '.') continue;
+      if (segment === '..') {
+        if (!segments.length) return source;
+        segments.pop();
+        continue;
+      }
+      if (segment.includes('/') || segment.includes('\\') || segment.includes('\0')) return source;
+      segments.push(segment);
+    }
+
+    if (!segments.length) return source;
+    const encodedPath = segments.map((segment) => encodeURIComponent(segment)).join('/');
+    const base = apiBase.endsWith('/') ? apiBase.slice(0, -1) : apiBase;
+    return `${base}/projects/${encodeURIComponent(projectId)}/assets/${encodedPath}${suffix}`;
+  }
+
+  function rewriteProjectImageSources(container) {
+    const project = state.currentProject;
+    const file = state.currentFile;
+    const apiBase = App.constants && App.constants.API;
+    if (!container || !project || !file || !apiBase) return;
+    container.querySelectorAll('img[src]').forEach((image) => {
+      const source = image.getAttribute('src');
+      const resolved = resolveProjectImageUrl(source, project.id, file.filePath, apiBase);
+      if (resolved !== source) image.setAttribute('src', resolved);
+    });
+  }
+
   function annotateLines(container, source, lineOffset = 0) {
     const lines = source.split('\n');
     const blockEls = container.querySelectorAll('h1, h2, h3, h4, h5, h6, p, pre, blockquote, li, td, tr, table, ul, ol, div.math-block, hr');
@@ -366,6 +418,7 @@
       : { headerHtml: '', bodyHtml: finalBodyHtml, referencesHtml: '' };
     const preview = $('#preview');
     preview.innerHTML = `${scientific.headerHtml}<div class="paper-body">${scientific.bodyHtml}</div>${scientific.referencesHtml}`;
+    rewriteProjectImageSources(preview);
     const bodyContainer = preview.querySelector('.paper-body') || preview;
     annotateLines(bodyContainer, parsed.body, parsed.bodyLineOffset);
     renderHighlight(bodyContainer);
@@ -398,6 +451,8 @@
     initPreviewClickNavigation,
     moveEditorCursorToPreviewClick,
     revealEditorOffset,
+    resolveProjectImageUrl,
+    rewriteProjectImageSources,
     schedulePreview,
     syncEditorToPreview,
     syncPreviewToEditor,
@@ -410,6 +465,7 @@
     module.exports = {
       getBestTokenMatchOffset,
       getNearestInlineMathOffset,
+      resolveProjectImageUrl,
       getSourceOffsetsForSlice,
       getTokenAtTextPosition
     };
