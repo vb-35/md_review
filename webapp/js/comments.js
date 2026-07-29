@@ -58,11 +58,19 @@
     return list.sort(comparator);
   }
 
+  function shouldSubmitOnEnter(event) {
+    return !!event
+      && event.key === 'Enter'
+      && !event.shiftKey
+      && !event.isComposing;
+  }
+
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
       getThreadLatestActivityTimestamp,
       isGlobalThread,
       getThreadStartLine,
+      shouldSubmitOnEnter,
       sortThreads
     };
     return;
@@ -386,6 +394,11 @@
           alert(error.message);
         }
       });
+      replyInput.addEventListener('keydown', (event) => {
+        if (!shouldSubmitOnEnter(event)) return;
+        event.preventDefault();
+        replyBtn.click();
+      });
       replySection.appendChild(replyInput);
       replySection.appendChild(replyBtn);
       div.appendChild(replySection);
@@ -622,6 +635,16 @@
 
   function bindComposerEvents() {
     $('#anchored-thread-body').addEventListener('input', handleAnchoredDraftInput);
+    $('#anchored-thread-body').addEventListener('keydown', (event) => {
+      if (!shouldSubmitOnEnter(event)) return;
+      event.preventDefault();
+      $('#btn-post-anchored-thread').click();
+    });
+    $('#thread-body').addEventListener('keydown', (event) => {
+      if (!shouldSubmitOnEnter(event)) return;
+      event.preventDefault();
+      $('#btn-add-thread').click();
+    });
     $('#btn-post-anchored-thread').addEventListener('click', async () => {
       try {
         await postAnchoredThread();

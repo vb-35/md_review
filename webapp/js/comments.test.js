@@ -4,6 +4,7 @@ const {
   getThreadLatestActivityTimestamp,
   isGlobalThread,
   getThreadStartLine,
+  shouldSubmitOnEnter,
   sortThreads
 } = require('./comments.js');
 
@@ -100,5 +101,10 @@ assert.deepStrictEqual(
   sortThreads([sameLineOlder, sameLineNewer], 'line-asc').map((thread) => thread.id),
   ['same-line-newer', 'same-line-older']
 );
+
+assert.strictEqual(shouldSubmitOnEnter({ key: 'Enter' }), true);
+assert.strictEqual(shouldSubmitOnEnter({ key: 'Enter', shiftKey: true }), false);
+assert.strictEqual(shouldSubmitOnEnter({ key: 'Enter', isComposing: true }), false);
+assert.strictEqual(shouldSubmitOnEnter({ key: 'a' }), false);
 
 console.log('PASS: comments sorting helpers');

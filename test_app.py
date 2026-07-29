@@ -115,7 +115,7 @@ def test_index_exposes_repo_actions():
     assert 'js/editor.js?v=20260722a' in html
     assert 'js/proposals.js?v=20260722a' in html
     assert 'js/projects.js?v=20260722f' in html
-    assert 'js/comments.js?v=20260722c' in html
+    assert 'js/comments.js?v=20260729a' in html
     print("PASS: index_exposes_repo_actions")
 
 
