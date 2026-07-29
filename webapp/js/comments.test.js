@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 const assert = require('assert');
 const {
+  findTextStartInSegments,
   getThreadLatestActivityTimestamp,
   isGlobalThread,
   getThreadStartLine,
@@ -106,5 +107,19 @@ assert.strictEqual(shouldSubmitOnEnter({ key: 'Enter' }), true);
 assert.strictEqual(shouldSubmitOnEnter({ key: 'Enter', shiftKey: true }), false);
 assert.strictEqual(shouldSubmitOnEnter({ key: 'Enter', isComposing: true }), false);
 assert.strictEqual(shouldSubmitOnEnter({ key: 'a' }), false);
+
+assert.deepStrictEqual(
+  findTextStartInSegments(['Before ', 'selected', ' text'], 'selected text'),
+  { segmentIndex: 1, offset: 0 }
+);
+assert.deepStrictEqual(
+  findTextStartInSegments(['First paragraph.\n', 'Second paragraph.'], 'Second paragraph.'),
+  { segmentIndex: 1, offset: 0 }
+);
+assert.deepStrictEqual(
+  findTextStartInSegments(['Before selected\n', '  text after'], 'selected text'),
+  { segmentIndex: 0, offset: 7 }
+);
+assert.strictEqual(findTextStartInSegments(['Unrelated text'], 'missing'), null);
 
 console.log('PASS: comments sorting helpers');

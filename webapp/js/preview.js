@@ -11,32 +11,24 @@
     return lineNumber;
   }
 
-  function preprocessMath(md, lineOffset = 0) {
+  function preprocessMath(md, lineOffset = 0, sourceOffset = 0) {
     const source = md;
     state.mathPlaceholders = {};
     state.placeholderCounter = 0;
 
-    md = md.replace(/\$\$([\s\S]+?)\$\$/g, (match, math, offset) => {
-      const key = `{MATHB:${state.placeholderCounter++}}`;
+    return md.replace(/\$\$([\s\S]+?)\$\$|\$([^\$\n]+?)\$/g, (match, blockMath, inlineMath, offset) => {
+      const type = blockMath !== undefined ? 'block' : 'inline';
+      const math = type === 'block' ? blockMath.trim() : inlineMath;
+      const key = `{MATH${type === 'block' ? 'B' : 'I'}:${state.placeholderCounter++}}`;
       state.mathPlaceholders[key] = {
-        type: 'block',
-        math: math.trim(),
-        line: lineOffset + getLineNumberAtOffset(source, offset)
-      };
-      return `\n\n${key}\n\n`;
-    });
-
-    md = md.replace(/\$([^\$\n]+?)\$/g, (match, math, offset) => {
-      const key = `{MATHI:${state.placeholderCounter++}}`;
-      state.mathPlaceholders[key] = {
-        type: 'inline',
+        type,
         math,
-        line: lineOffset + getLineNumberAtOffset(source, offset)
+        line: lineOffset + getLineNumberAtOffset(source, offset),
+        sourceStart: sourceOffset + offset,
+        sourceEnd: sourceOffset + offset + match.length
       };
-      return ` ${key} `;
+      return type === 'block' ? `\n\n${key}\n\n` : ` ${key} `;
     });
-
-    return md;
   }
 
   function escapeHtml(text) {
@@ -44,7 +36,7 @@
   }
 
   function postprocessMath(html) {
-    for (const [key, { type, math, line }] of Object.entries(state.mathPlaceholders)) {
+    for (const [key, { type, math, line, sourceStart, sourceEnd }] of Object.entries(state.mathPlaceholders)) {
       let rendered;
       try {
         rendered = root.katex.renderToString(math, {
@@ -55,9 +47,10 @@
         rendered = `<code>${escapeHtml(math)}</code>`;
       }
       const lineAttr = line ? ` data-line="${line}"` : '';
+      const sourceAttrs = ` data-source-start="${sourceStart}" data-source-end="${sourceEnd}"`;
       const wrapper = type === 'block'
-        ? `<div class="math-block"${lineAttr}>${rendered}</div>`
-        : `<span class="math-inline"${lineAttr}>${rendered}</span>`;
+        ? `<div class="math-block"${lineAttr}${sourceAttrs}>${rendered}</div>`
+        : `<span class="math-inline"${lineAttr}${sourceAttrs}>${rendered}</span>`;
       html = html.split(key).join(wrapper);
     }
     return html;
@@ -123,34 +116,79 @@
     });
   }
 
+  function getLineMatchTokens(text) {
+    return String(text || '').toLowerCase().match(/[a-z0-9_]+/g) || [];
+  }
+
+  function lineMatchesRenderedText(sourceLine, renderedText) {
+    const line = String(sourceLine || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    const text = String(renderedText || '').replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!line || !text) return false;
+    if (line.includes(text.slice(0, 80))) return true;
+
+    const expected = getLineMatchTokens(text).slice(0, 4);
+    const available = getLineMatchTokens(line);
+    if (!expected.length) return false;
+    let expectedIndex = 0;
+    for (const token of available) {
+      if (token === expected[expectedIndex]) expectedIndex += 1;
+      if (expectedIndex === expected.length) return true;
+    }
+    return false;
+  }
+
+  function findSourceLineForRenderedText(lines, renderedText, startIndex = 0) {
+    if (!Array.isArray(lines) || !renderedText) return -1;
+    const firstIndex = Math.max(0, Number.isFinite(startIndex) ? startIndex : 0);
+    for (let index = firstIndex; index < lines.length; index += 1) {
+      if (lineMatchesRenderedText(lines[index], renderedText)) return index;
+    }
+    return -1;
+  }
+
+  function getElementTextProbe(element) {
+    const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null);
+    let node;
+    while ((node = walker.nextNode())) {
+      const value = node.textContent.replace(/\s+/g, ' ').trim();
+      if (value) return value;
+    }
+    return '';
+  }
+
   function annotateLines(container, source, lineOffset = 0) {
     const lines = source.split('\n');
-    const blockEls = container.querySelectorAll('h1, h2, h3, h4, h5, h6, p, pre, blockquote, li, td, tr, table, ul, ol, div.math-block, hr');
-    const processed = new Set();
+    const blockEls = container.querySelectorAll('h1, h2, h3, h4, h5, h6, p, pre, li, tr, td, th, div.math-block, hr');
+    let nextSourceLine = 0;
 
     for (const el of blockEls) {
-      if (processed.has(el)) continue;
+      if (el.matches('li') && [...el.children].some((child) => child.matches('p'))) continue;
+      if (el.matches('td, th')) {
+        const row = el.closest('tr[data-line]');
+        if (row) {
+          el.setAttribute('data-line', row.getAttribute('data-line'));
+          continue;
+        }
+      }
       if (el.hasAttribute('data-line')) {
-        processed.add(el);
+        const existingLine = parseInt(el.getAttribute('data-line'), 10) - lineOffset - 1;
+        if (Number.isFinite(existingLine)) nextSourceLine = Math.max(nextSourceLine, existingLine + 1);
         continue;
       }
-      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, null);
-      let textNode;
-      let lineNumber = null;
-      while ((textNode = walker.nextNode())) {
-        const content = textNode.textContent.trim();
-        if (!content) continue;
-        const searchText = content.substring(0, 50);
-        for (let i = 0; i < lines.length; i += 1) {
-          if (lines[i].includes(searchText)) {
-            lineNumber = lineOffset + i + 1;
+      let lineIndex = -1;
+      if (el.matches('hr')) {
+        for (let index = nextSourceLine; index < lines.length; index += 1) {
+          if (/^\s{0,3}((\*\s*){3,}|(-\s*){3,}|(_\s*){3,})$/.test(lines[index])) {
+            lineIndex = index;
             break;
           }
         }
-        break;
+      } else {
+        lineIndex = findSourceLineForRenderedText(lines, getElementTextProbe(el), nextSourceLine);
       }
-      if (lineNumber) el.setAttribute('data-line', lineNumber);
-      processed.add(el);
+      if (lineIndex === -1) continue;
+      el.setAttribute('data-line', lineOffset + lineIndex + 1);
+      nextSourceLine = lineIndex + 1;
     }
   }
 
@@ -376,6 +414,95 @@
     return getSourceOffsetsForSlice(App.editor.getValue(), startLine, endLine, selectedText);
   }
 
+  function getMathElementsInRange(range) {
+    const preview = $('#preview');
+    if (!preview || !range || typeof range.intersectsNode !== 'function') return [];
+    return [...preview.querySelectorAll('.math-inline[data-source-start], .math-block[data-source-start]')]
+      .filter((element) => {
+        try {
+          return range.intersectsNode(element);
+        } catch {
+          return false;
+        }
+      });
+  }
+
+  function getRangeTextBeforeElement(range, element) {
+    try {
+      const prefix = range.cloneRange();
+      prefix.setEndBefore(element);
+      return prefix.toString().trim();
+    } catch {
+      return '';
+    }
+  }
+
+  function getRangeTextAfterElement(range, element) {
+    try {
+      const suffix = range.cloneRange();
+      suffix.setStartAfter(element);
+      return suffix.toString().trim();
+    } catch {
+      return '';
+    }
+  }
+
+  function findTextInSourceRegion(source, text, regionStart, regionEnd, preferLast = false) {
+    const needle = String(text || '').trim();
+    const start = Math.max(0, regionStart || 0);
+    const end = Math.max(start, Math.min(source.length, regionEnd));
+    if (!needle || start >= end) return null;
+    const region = source.slice(start, end);
+    const index = preferLast ? region.lastIndexOf(needle) : region.indexOf(needle);
+    if (index !== -1) {
+      return { start: start + index, end: start + index + needle.length };
+    }
+    const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+    const matches = [...region.matchAll(new RegExp(escaped, 'g'))];
+    if (!matches.length) return null;
+    const match = preferLast ? matches[matches.length - 1] : matches[0];
+    return { start: start + match.index, end: start + match.index + match[0].length };
+  }
+
+  function getSourceAnchorFromPreviewRange(range, startLine, endLine, selectedText) {
+    const source = App.editor.getValue();
+    const mathElements = getMathElementsInRange(range);
+    if (!mathElements.length) {
+      const offsets = getSourceOffsetsForSlice(source, startLine, endLine, selectedText);
+      return {
+        startOffset: offsets ? offsets.startOffset : null,
+        endOffset: offsets ? offsets.endOffset : null,
+        selectedText,
+        includesMath: false
+      };
+    }
+
+    const firstMath = mathElements[0];
+    const lastMath = mathElements[mathElements.length - 1];
+    const firstMathStart = parseInt(firstMath.dataset.sourceStart, 10);
+    const lastMathEnd = parseInt(lastMath.dataset.sourceEnd, 10);
+    const sliceStart = getLineStartOffset(source, startLine);
+    const sliceEnd = getLineEndOffset(source, endLine);
+    const prefixText = firstMath.contains(range.startContainer)
+      ? ''
+      : getRangeTextBeforeElement(range, firstMath);
+    const suffixText = lastMath.contains(range.endContainer)
+      ? ''
+      : getRangeTextAfterElement(range, lastMath);
+    const prefixMatch = findTextInSourceRegion(source, prefixText, sliceStart, firstMathStart, true);
+    const suffixMatch = findTextInSourceRegion(source, suffixText, lastMathEnd, sliceEnd, false);
+    let startOffset = prefixMatch ? prefixMatch.start : firstMathStart;
+    let endOffset = suffixMatch ? suffixMatch.end : lastMathEnd;
+    while (startOffset < endOffset && /\s/.test(source[startOffset])) startOffset += 1;
+    while (endOffset > startOffset && /\s/.test(source[endOffset - 1])) endOffset -= 1;
+    return {
+      startOffset,
+      endOffset,
+      selectedText: source.slice(startOffset, endOffset),
+      includesMath: true
+    };
+  }
+
   function syncEditorToPreview() {
     if (!state.settings.syncView || state.syncingScroll) return;
     const preview = $('#preview');
@@ -411,7 +538,8 @@
     const parsed = root.ScientificPreview
       ? root.ScientificPreview.parseDocument(source)
       : { metadata: {}, body: source, bodyLineOffset: 0 };
-    const html = root.marked.parse(preprocessMath(parsed.body, parsed.bodyLineOffset));
+    const bodySourceOffset = getLineStartOffset(source, parsed.bodyLineOffset + 1);
+    const html = root.marked.parse(preprocessMath(parsed.body, parsed.bodyLineOffset, bodySourceOffset));
     const finalBodyHtml = postprocessMath(html);
     const scientific = root.ScientificPreview
       ? root.ScientificPreview.renderDocument(parsed, finalBodyHtml)
@@ -445,6 +573,7 @@
     getLineTextAt,
     getNearestInlineMathOffset,
     getSelectionLine,
+    getSourceAnchorFromPreviewRange,
     getSourceOffsetsForSlice,
     getSourceOffsetsFromPreviewSelection,
     getTokenAtTextPosition,
@@ -463,9 +592,13 @@
 
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
+      findSourceLineForRenderedText,
+      findTextInSourceRegion,
       getBestTokenMatchOffset,
       getNearestInlineMathOffset,
+      lineMatchesRenderedText,
       resolveProjectImageUrl,
+      preprocessMath,
       getSourceOffsetsForSlice,
       getTokenAtTextPosition
     };

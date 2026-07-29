@@ -850,6 +850,18 @@ body.preview-justify-disabled .markdown-body ol {
   margin: 16px 0;
 }
 
+.math-inline,
+.math-block {
+  -webkit-user-select: all;
+  user-select: all;
+}
+
+.math-inline .katex-mathml,
+.math-block .katex-mathml {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 .citation {
   color: var(--accent);
   text-decoration: none;
@@ -887,6 +899,13 @@ body.preview-justify-disabled .markdown-body ol {
 }
 
 .thread-text-highlight {
+  background: rgba(242, 184, 75, 0.12) !important;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.thread-math-highlight {
   background: rgba(242, 184, 75, 0.12) !important;
   outline: 2px solid var(--accent);
   outline-offset: 2px;

@@ -65,8 +65,58 @@
       && !event.isComposing;
   }
 
+  function findTextStartInSegments(segments, text) {
+    const values = Array.isArray(segments) ? segments.map((value) => String(value || '')) : [];
+    const needle = String(text || '').trim();
+    if (!values.length || !needle) return null;
+
+    const fullText = values.join('');
+    let start = fullText.indexOf(needle);
+
+    if (start === -1) {
+      const normalizeWithOffsets = (value) => {
+        let normalized = '';
+        const offsets = [];
+        let inWhitespace = false;
+        for (let index = 0; index < value.length; index += 1) {
+          if (/\s/.test(value[index])) {
+            if (!inWhitespace) {
+              normalized += ' ';
+              offsets.push(index);
+              inWhitespace = true;
+            }
+          } else {
+            normalized += value[index];
+            offsets.push(index);
+            inWhitespace = false;
+          }
+        }
+        return { normalized, offsets };
+      };
+      const haystack = normalizeWithOffsets(fullText);
+      const normalizedNeedle = needle.replace(/\s+/g, ' ');
+      const normalizedStart = haystack.normalized.indexOf(normalizedNeedle);
+      if (normalizedStart === -1) return null;
+      start = haystack.offsets[normalizedStart];
+    }
+
+    let consumed = 0;
+    for (let segmentIndex = 0; segmentIndex < values.length; segmentIndex += 1) {
+      const next = consumed + values[segmentIndex].length;
+      if (start < next || (start === next && segmentIndex === values.length - 1)) {
+        return {
+          segmentIndex,
+          offset: Math.max(0, start - consumed)
+        };
+      }
+      consumed = next;
+    }
+    return null;
+  }
+
   if (typeof module !== 'undefined' && module.exports) {
     module.exports = {
+      findTextStartInSegments,
       getThreadLatestActivityTimestamp,
       isGlobalThread,
       getThreadStartLine,
@@ -107,6 +157,9 @@
   }
 
   function clearThreadHighlights() {
+    document.querySelectorAll('.thread-math-highlight').forEach((el) => {
+      el.classList.remove('thread-math-highlight');
+    });
     document.querySelectorAll('.thread-text-highlight').forEach((el) => {
       const parent = el.parentNode;
       if (!parent) return;
@@ -123,6 +176,9 @@
         if (!node.textContent) return NodeFilter.FILTER_REJECT;
         let el = node.parentElement;
         while (el && el !== preview) {
+          if (el.classList && el.classList.contains('comment-indicator')) {
+            return NodeFilter.FILTER_REJECT;
+          }
           if (el.hasAttribute && el.hasAttribute('data-line')) {
             const line = parseInt(el.getAttribute('data-line'), 10);
             return line >= anchor.startLine && line <= anchor.endLine
@@ -137,6 +193,70 @@
     let node;
     while ((node = walker.nextNode())) nodes.push(node);
     return nodes;
+  }
+
+  function getAnchorMathElements(preview, anchor) {
+    if (
+      !anchor
+      || typeof anchor.startOffset !== 'number'
+      || typeof anchor.endOffset !== 'number'
+    ) return [];
+    return [...preview.querySelectorAll('.math-inline[data-source-start], .math-block[data-source-start]')]
+      .filter((element) => {
+        const start = parseInt(element.dataset.sourceStart, 10);
+        const end = parseInt(element.dataset.sourceEnd, 10);
+        return Number.isFinite(start)
+          && Number.isFinite(end)
+          && anchor.startOffset < end
+          && anchor.endOffset > start;
+      });
+  }
+
+  function insertIndicatorBeforeText(textNodes, text, indicator) {
+    const match = findTextStartInSegments(
+      textNodes.map((node) => node.textContent),
+      text
+    );
+    if (!match) return false;
+    const node = textNodes[match.segmentIndex];
+    const insertionNode = match.offset > 0 ? node.splitText(match.offset) : node;
+    insertionNode.parentNode.insertBefore(indicator, insertionNode);
+    return true;
+  }
+
+  function insertCommentIndicatorAtAnchor(preview, anchor, indicator) {
+    const selectedText = getAnchorSelectedText(anchor);
+    const textNodes = getPreviewSelectionTextNodes(preview, anchor);
+    if (selectedText && insertIndicatorBeforeText(textNodes, selectedText, indicator)) return true;
+
+    const mathElements = getAnchorMathElements(preview, anchor);
+    if (!mathElements.length) return false;
+    const firstMath = mathElements[0];
+    const mathStart = parseInt(firstMath.dataset.sourceStart, 10);
+    if (anchor.startOffset < mathStart) {
+      const leadingText = App.editor.getValue().slice(anchor.startOffset, mathStart).trim();
+      if (leadingText && insertIndicatorBeforeText(textNodes, leadingText, indicator)) return true;
+    }
+    firstMath.parentNode.insertBefore(indicator, firstMath);
+    return true;
+  }
+
+  function getBestLineTarget(preview, lineNumber, selectedText) {
+    const targets = [...preview.querySelectorAll(`[data-line="${lineNumber}"]`)];
+    if (!targets.length) return null;
+    if (selectedText) {
+      const matchingTargets = targets.filter((target) => (
+        findTextStartInSegments([target.textContent], selectedText)
+      ));
+      if (matchingTargets.length) {
+        return matchingTargets.find((target) => (
+          !matchingTargets.some((other) => other !== target && target.contains(other))
+        )) || matchingTargets[0];
+      }
+    }
+    return targets.find((target) => (
+      !targets.some((other) => other !== target && target.contains(other))
+    )) || targets[0];
   }
 
   function scrollElementIntoContainer(container, target) {
@@ -154,35 +274,45 @@
   function highlightPreviewText(anchor) {
     const preview = $('#preview');
     const textToFind = getAnchorSelectedText(anchor);
-    if (!textToFind || !anchor || !anchor.startLine) return false;
+    if (!anchor || !anchor.startLine) return false;
     const textNodes = getPreviewSelectionTextNodes(preview, anchor);
-    if (!textNodes.length) return false;
-    const fullText = textNodes.map((node) => node.textContent).join('');
-    const matchIndex = fullText.indexOf(textToFind);
-    if (matchIndex === -1) return false;
-    let remainingStart = matchIndex;
-    let remainingEnd = matchIndex + textToFind.length;
-    const spans = [];
-    for (const node of textNodes) {
-      const len = node.textContent.length;
-      const startInNode = Math.max(0, remainingStart);
-      const endInNode = Math.min(len, remainingEnd);
-      if (startInNode < endInNode) {
-        let target = node;
-        if (startInNode > 0) target = target.splitText(startInNode);
-        if (endInNode - startInNode < target.textContent.length) target.splitText(endInNode - startInNode);
-        const span = document.createElement('span');
-        span.className = 'thread-text-highlight';
-        target.parentNode.insertBefore(span, target);
-        span.appendChild(target);
-        spans.push(span);
+    if (textToFind && textNodes.length) {
+      const fullText = textNodes.map((node) => node.textContent).join('');
+      const matchIndex = fullText.indexOf(textToFind);
+      if (matchIndex !== -1) {
+        let remainingStart = matchIndex;
+        let remainingEnd = matchIndex + textToFind.length;
+        const spans = [];
+        for (const node of textNodes) {
+          const len = node.textContent.length;
+          const startInNode = Math.max(0, remainingStart);
+          const endInNode = Math.min(len, remainingEnd);
+          if (startInNode < endInNode) {
+            let target = node;
+            if (startInNode > 0) target = target.splitText(startInNode);
+            if (endInNode - startInNode < target.textContent.length) target.splitText(endInNode - startInNode);
+            const span = document.createElement('span');
+            span.className = 'thread-text-highlight';
+            target.parentNode.insertBefore(span, target);
+            span.appendChild(target);
+            spans.push(span);
+          }
+          remainingStart -= len;
+          remainingEnd -= len;
+          if (remainingEnd <= 0) break;
+        }
+        if (spans.length) {
+          scrollElementIntoContainer(preview, spans[0]);
+          setTimeout(clearThreadHighlights, 3000);
+          return true;
+        }
       }
-      remainingStart -= len;
-      remainingEnd -= len;
-      if (remainingEnd <= 0) break;
     }
-    if (!spans.length) return false;
-    scrollElementIntoContainer(preview, spans[0]);
+
+    const mathElements = getAnchorMathElements(preview, anchor);
+    if (!mathElements.length) return false;
+    mathElements.forEach((element) => element.classList.add('thread-math-highlight'));
+    scrollElementIntoContainer(preview, mathElements[0]);
     setTimeout(clearThreadHighlights, 3000);
     return true;
   }
@@ -291,22 +421,28 @@
 
   function updateCommentMarkers() {
     const preview = $('#preview');
-    preview.querySelectorAll('.comment-indicator').forEach((marker) => marker.remove());
+    preview.querySelectorAll('.comment-indicator').forEach((marker) => {
+      const parent = marker.parentNode;
+      marker.remove();
+      if (parent) parent.normalize();
+    });
     for (const thread of state.threads) {
       if (!thread.anchor || thread.resolved) continue;
-      const targets = preview.querySelectorAll(`[data-line="${thread.anchor.startLine}"]`);
-      targets.forEach((el) => {
-        const indicator = document.createElement('span');
-        indicator.className = 'comment-indicator';
-        indicator.title = `${thread.comments.length} comment${thread.comments.length !== 1 ? 's' : ''}`;
-        indicator.textContent = '●';
-        indicator.addEventListener('click', (event) => {
-          event.stopPropagation();
-          openThreadInPanel(thread.id);
-        });
-        el.style.position = 'relative';
-        el.prepend(indicator);
+      const indicator = document.createElement('span');
+      indicator.className = 'comment-indicator';
+      indicator.title = `${thread.comments.length} comment${thread.comments.length !== 1 ? 's' : ''}`;
+      indicator.textContent = '●';
+      indicator.addEventListener('click', (event) => {
+        event.stopPropagation();
+        openThreadInPanel(thread.id);
       });
+      if (insertCommentIndicatorAtAnchor(preview, thread.anchor, indicator)) continue;
+      const target = getBestLineTarget(
+        preview,
+        thread.anchor.startLine,
+        getAnchorSelectedText(thread.anchor)
+      );
+      if (target) target.prepend(indicator);
     }
   }
 
@@ -551,17 +687,22 @@
         const range = selection.getRangeAt(0);
         if (!preview.contains(range.commonAncestorContainer)) return;
         const selectedText = selection.toString().trim();
-        if (!selectedText || selectedText.length < 2) return;
         const startLine = App.preview.getSelectionLine(range.startContainer);
         const endLine = App.preview.getSelectionLine(range.endContainer);
         if (!startLine || !endLine) return;
-        const offsets = App.preview.getSourceOffsetsFromPreviewSelection(startLine, endLine, selectedText);
+        const sourceAnchor = App.preview.getSourceAnchorFromPreviewRange(
+          range,
+          startLine,
+          endLine,
+          selectedText
+        );
+        if (!sourceAnchor.includesMath && (!selectedText || selectedText.length < 2)) return;
         showCommentPrompt(range, {
           startLine,
           endLine,
-          startOffset: offsets ? offsets.startOffset : null,
-          endOffset: offsets ? offsets.endOffset : null,
-          selectedText
+          startOffset: sourceAnchor.startOffset,
+          endOffset: sourceAnchor.endOffset,
+          selectedText: sourceAnchor.selectedText
         });
       }, 200);
     });

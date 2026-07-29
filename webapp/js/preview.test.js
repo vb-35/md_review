@@ -6,7 +6,13 @@ global.App = {
   $: () => null
 };
 
-const { resolveProjectImageUrl } = require('./preview.js');
+const {
+  findSourceLineForRenderedText,
+  findTextInSourceRegion,
+  lineMatchesRenderedText,
+  preprocessMath,
+  resolveProjectImageUrl
+} = require('./preview.js');
 
 assert.strictEqual(
   resolveProjectImageUrl(
@@ -51,5 +57,52 @@ for (const source of [
     source
   );
 }
+
+const repeatedParagraphs = [
+  'Repeated paragraph text.',
+  '',
+  'A paragraph in between.',
+  '',
+  'Repeated paragraph text.'
+];
+assert.strictEqual(
+  findSourceLineForRenderedText(repeatedParagraphs, 'Repeated paragraph text.', 0),
+  0
+);
+assert.strictEqual(
+  findSourceLineForRenderedText(repeatedParagraphs, 'Repeated paragraph text.', 1),
+  4
+);
+assert.strictEqual(
+  lineMatchesRenderedText('A **formatted** paragraph.', 'A formatted paragraph.'),
+  true
+);
+assert.strictEqual(
+  findSourceLineForRenderedText(repeatedParagraphs, 'Missing paragraph.', 0),
+  -1
+);
+
+const mathSource = 'Before $x^2$ and $$y = 3$$ after.';
+const processedMath = preprocessMath(mathSource, 4, 100);
+assert(processedMath.includes('{MATHI:0}'));
+assert(processedMath.includes('{MATHB:1}'));
+assert.deepStrictEqual(global.App.state.mathPlaceholders['{MATHI:0}'], {
+  type: 'inline',
+  math: 'x^2',
+  line: 5,
+  sourceStart: 107,
+  sourceEnd: 112
+});
+assert.deepStrictEqual(global.App.state.mathPlaceholders['{MATHB:1}'], {
+  type: 'block',
+  math: 'y = 3',
+  line: 5,
+  sourceStart: 117,
+  sourceEnd: 126
+});
+assert.deepStrictEqual(
+  findTextInSourceRegion('Repeated before $x$ before', 'before', 0, 20, true),
+  { start: 9, end: 15 }
+);
 
 console.log('PASS: preview project image paths');
