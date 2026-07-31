@@ -1582,8 +1582,7 @@ body.preview-justify-disabled .markdown-body ol {
 
 .proposal-review-header,
 .proposal-title-row,
-.proposal-bulk-actions,
-.proposal-publish-actions,
+.proposal-actions,
 .proposal-comment-action {
   display: flex;
   align-items: center;
@@ -1641,16 +1640,18 @@ body.preview-justify-disabled .markdown-body ol {
   background: rgba(127, 212, 166, 0.08);
 }
 
-.proposal-bulk-actions,
-.proposal-publish-actions {
+.proposal-actions {
   justify-content: flex-end;
-  margin: 12px 0;
+  flex-wrap: wrap;
+  margin: 12px 0 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
 }
 
 .proposal-files {
   display: grid;
   gap: 16px;
-  margin-top: 14px;
 }
 
 .proposal-file {
@@ -1705,11 +1706,6 @@ body.preview-justify-disabled .markdown-body ol {
   margin: 3px 0 0;
   color: var(--fg-dim);
   white-space: pre-wrap;
-}
-
-.proposal-publish-actions {
-  padding-top: 16px;
-  border-top: 1px solid var(--border);
 }
 
 @media (max-width: 768px) {

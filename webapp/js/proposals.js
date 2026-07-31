@@ -213,9 +213,12 @@
       </div>
       ${staleNotice}
       ${lockNotice}
-      ${reviewerEnabled ? `<div class="proposal-bulk-actions">
-        <button type="button" data-bulk-decision="accept">Accept all</button>
-        <button type="button" data-bulk-decision="refuse">Refuse all</button>
+      ${reviewerEnabled || deleteEnabled ? `<div class="proposal-actions">
+        ${reviewerEnabled ? '<button type="button" data-bulk-decision="accept">Accept all</button>' : ''}
+        ${reviewerEnabled ? '<button type="button" data-bulk-decision="refuse">Refuse all</button>' : ''}
+        ${reviewerEnabled ? '<button type="button" id="btn-reject-proposal" class="danger">Reject proposal</button>' : ''}
+        ${deleteEnabled ? '<button type="button" id="btn-delete-proposal" class="danger">Delete proposal</button>' : ''}
+        ${reviewerEnabled ? `<button type="button" id="btn-close-proposal-review" class="primary"${proposal.review.canClose ? '' : ' disabled'}>Apply & close review</button>` : ''}
       </div>` : ''}
       <div class="proposal-files">
         ${proposal.files.map((file) => renderFileDiff(file, reviewerEnabled)).join('')}
@@ -224,11 +227,6 @@
         <h4>Comment actions</h4>
         ${proposal.commentActions.map((action) => renderCommentAction(action, reviewerEnabled)).join('')}
       </section>` : ''}
-      ${reviewerEnabled || deleteEnabled ? `<div class="proposal-publish-actions">
-        ${reviewerEnabled ? '<button type="button" id="btn-reject-proposal" class="danger">Reject proposal</button>' : ''}
-        ${deleteEnabled ? '<button type="button" id="btn-delete-proposal" class="danger">Delete proposal</button>' : ''}
-        ${reviewerEnabled ? `<button type="button" id="btn-close-proposal-review" class="primary"${proposal.review.canClose ? '' : ' disabled'}>Apply & close review</button>` : ''}
-      </div>` : ''}
       ${proposal.status === 'closed'
         ? `<div class="proposal-notice success">Review closed by ${esc(proposal.reviewerUsername || 'reviewer')}. Saved file versions remain in project history.</div>`
         : proposal.status === 'accepted' && proposal.appliedCommitSha
