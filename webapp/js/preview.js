@@ -504,6 +504,7 @@
   }
 
   function syncEditorToPreview() {
+    if (App.reviewMain && App.reviewMain.isVisible && App.reviewMain.isVisible()) return;
     if (!state.settings.syncView || state.syncingScroll) return;
     const preview = $('#preview');
     if (!preview || !preview.offsetParent) return;
@@ -517,6 +518,7 @@
   }
 
   function syncPreviewToEditor() {
+    if (App.reviewMain && App.reviewMain.syncPreviewToSource && App.reviewMain.syncPreviewToSource()) return;
     if (!state.settings.syncView || state.syncingScroll) return;
     const preview = $('#preview');
     if (!preview || !preview.offsetParent) return;
@@ -529,12 +531,8 @@
     });
   }
 
-  function updatePreview() {
-    if (!state.currentFile) {
-      $('#preview').innerHTML = '';
-      return;
-    }
-    const source = App.editor.getValue();
+  function renderSource(source, options = {}) {
+    const reviewMode = !!options.reviewMode;
     const parsed = root.ScientificPreview
       ? root.ScientificPreview.parseDocument(source)
       : { metadata: {}, body: source, bodyLineOffset: 0 };
@@ -550,7 +548,23 @@
     const bodyContainer = preview.querySelector('.paper-body') || preview;
     annotateLines(bodyContainer, parsed.body, parsed.bodyLineOffset);
     renderHighlight(bodyContainer);
-    if (App.comments.updateCommentMarkers) App.comments.updateCommentMarkers();
+    if (reviewMode) {
+      if (App.reviewMain && App.reviewMain.decoratePreview) App.reviewMain.decoratePreview(preview);
+    } else if (App.comments.updateCommentMarkers) {
+      App.comments.updateCommentMarkers();
+    }
+  }
+
+  function updatePreview() {
+    if (!state.currentFile) {
+      $('#preview').innerHTML = '';
+      return;
+    }
+    if (App.reviewMain && App.reviewMain.isVisible && App.reviewMain.isVisible()) {
+      App.reviewMain.renderPreview();
+      return;
+    }
+    renderSource(App.editor.getValue());
   }
 
   function schedulePreview() {
@@ -560,6 +574,7 @@
 
   function initPreviewClickNavigation() {
     $('#preview').addEventListener('click', (event) => {
+      if (App.reviewMain && App.reviewMain.isVisible && App.reviewMain.isVisible()) return;
       moveEditorCursorToPreviewClick(event);
     });
   }
@@ -581,6 +596,7 @@
     moveEditorCursorToPreviewClick,
     revealEditorOffset,
     resolveProjectImageUrl,
+    renderSource,
     rewriteProjectImageSources,
     schedulePreview,
     syncEditorToPreview,

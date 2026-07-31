@@ -255,6 +255,7 @@
     if (active && active.needsSave && active.filePath !== filePath) {
       if (!window.confirm('Discard the unsaved reviewed changes and open another file?')) return;
     }
+    if (App.reviewMain && App.reviewMain.clear) App.reviewMain.clear();
     state.currentProject = await App.api('GET', `/projects/${state.currentProject.id}`);
     state.currentFile = await App.api('GET', `/projects/${state.currentProject.id}/files/content?path=${encodeURIComponent(filePath)}`);
     if (App.findReplace && App.findReplace.closeToolbar) App.findReplace.closeToolbar();
@@ -570,6 +571,7 @@
     review.needsSave = file.needsSave;
     renderDiff(state.comparedDiff.diff);
     await projectActiveProposalReview(file.needsSave);
+    if (App.reviewMain && App.reviewMain.refresh) App.reviewMain.refresh();
   }
 
   function selectedProposalId() {
@@ -601,6 +603,7 @@
     if (comparisonBaselineContent === null) {
       comparisonBaselineContent = App.editor.getValue();
     }
+    if (App.reviewMain && App.reviewMain.hide) App.reviewMain.hide();
     const result = await App.api('POST', `/projects/${state.currentProject.id}/files/compare`, {
       path: state.currentFile.filePath,
       versionA: state.selectedBaseId,
@@ -676,6 +679,7 @@
       };
       renderDiff(state.comparedDiff.diff);
       await projectActiveProposalReview();
+      if (App.reviewMain && App.reviewMain.refresh) App.reviewMain.refresh();
       return;
     }
 
@@ -714,6 +718,7 @@
     App.preview.updatePreview();
     updateHeader();
     renderDiff(state.comparedDiff.diff);
+    if (App.reviewMain && App.reviewMain.refresh) App.reviewMain.refresh();
   }
 
   async function acceptAllDiffChunks(rowId) {
@@ -760,6 +765,7 @@
       };
       renderDiff(state.comparedDiff.diff);
       await projectActiveProposalReview();
+      if (App.reviewMain && App.reviewMain.refresh) App.reviewMain.refresh();
       return;
     }
 
@@ -794,6 +800,7 @@
     App.preview.updatePreview();
     updateHeader();
     renderDiff(state.comparedDiff.diff);
+    if (App.reviewMain && App.reviewMain.refresh) App.reviewMain.refresh();
   }
 
   async function revertSelectedVersion() {
@@ -831,6 +838,9 @@
   }
 
   App.projects = {
+    acceptAllDiffChunks,
+    applyDiffDecision,
+    canApplyDiffChunks,
     compareSelectedVersions,
     downloadProjectRepo,
     handleFileAction,

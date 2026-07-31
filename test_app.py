@@ -109,13 +109,16 @@ def test_index_exposes_repo_actions():
     assert 'proposal-review' in html
     assert 'btn-version-manage-tab' in html
     assert 'version-manage-list' in html
-    assert 'css/style.css?v=20260729b' in html
-    assert 'js/app.js?v=20260722f' in html
+    assert 'btn-main-review-toggle' in html
+    assert 'review-source' in html
+    assert 'css/style.css?v=20260731a' in html
+    assert 'js/app.js?v=20260731a' in html
     assert 'js/find-replace.js?v=20260722b' in html
     assert 'js/editor.js?v=20260722a' in html
     assert 'js/proposals.js?v=20260729b' in html
-    assert 'js/projects.js?v=20260722f' in html
-    assert 'js/comments.js?v=20260729a' in html
+    assert 'js/review-main.js?v=20260731a' in html
+    assert 'js/projects.js?v=20260731a' in html
+    assert 'js/comments.js?v=20260731a' in html
     print("PASS: index_exposes_repo_actions")
 
 
@@ -315,7 +318,7 @@ def test_find_replace_js_helpers():
     if not shutil.which('node'):
         print("SKIP: find_replace_js_helpers (node not installed)")
         return
-    for filename in ('app.js', 'find-replace.js', 'projects.js', 'proposals.js'):
+    for filename in ('app.js', 'comments.js', 'find-replace.js', 'preview.js', 'projects.js', 'proposals.js', 'review-main.js'):
         subprocess.run(
             ['node', '--check', os.path.join(os.path.dirname(__file__), 'webapp/js', filename)],
             check=True,
@@ -351,6 +354,20 @@ def test_preview_js_helpers():
     )
     assert 'PASS: preview project image paths' in result.stdout
     print("PASS: preview_js_helpers")
+
+
+def test_review_main_js_helpers():
+    if not shutil.which('node'):
+        print("SKIP: review_main_js_helpers (node not installed)")
+        return
+    result = subprocess.run(
+        ['node', os.path.join(os.path.dirname(__file__), 'webapp/js/review-main.test.js')],
+        check=True,
+        capture_output=True,
+        text=True
+    )
+    assert 'PASS: main review tracked source helpers' in result.stdout
+    print("PASS: review_main_js_helpers")
 
 
 def test_diff_and_renderer():
@@ -560,6 +577,7 @@ if __name__ == '__main__':
     test_find_replace_js_helpers()
     test_comments_js_helpers()
     test_preview_js_helpers()
+    test_review_main_js_helpers()
     test_diff_and_renderer()
     test_proposal_decision_annotates_rendered_diff()
     test_apply_diff_chunk_replace_and_conflict()

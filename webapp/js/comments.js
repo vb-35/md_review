@@ -681,6 +681,7 @@
     preview.addEventListener('mouseup', () => {
       clearTimeout(selectionTimeout);
       selectionTimeout = setTimeout(() => {
+        if (App.reviewMain && App.reviewMain.isVisible && App.reviewMain.isVisible()) return;
         if (!canCommentCurrentProject()) return;
         const selection = window.getSelection();
         if (!selection || selection.isCollapsed || !selection.rangeCount) return;

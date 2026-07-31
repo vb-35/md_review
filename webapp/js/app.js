@@ -302,6 +302,7 @@ const state = {
   comparedDiffDecisions: {},
   lastAppliedDiffAction: null,
   activeProposalReview: null,
+  mainReview: null,
   editing: false,
   showResolved: false,
   commentSort: 'activity-desc',
@@ -377,11 +378,17 @@ function applySidePanelLayout() {
 }
 
 function openSidePanel(panelName) {
+  if (panelName !== 'review' && window.App.reviewMain && window.App.reviewMain.hide) {
+    window.App.reviewMain.hide();
+  }
   state.activeSidePanel = panelName === 'review' || panelName === 'comments' ? panelName : 'none';
   applySidePanelLayout();
 }
 
 function closeSidePanel() {
+  if (window.App.reviewMain && window.App.reviewMain.hide) {
+    window.App.reviewMain.hide();
+  }
   state.activeSidePanel = 'none';
   applySidePanelLayout();
 }
@@ -735,6 +742,9 @@ function syncLockHeartbeat() {
 }
 
 function resetEditorState() {
+  if (window.App.reviewMain && window.App.reviewMain.clear) {
+    window.App.reviewMain.clear();
+  }
   state.currentFile = null;
   state.suspendEditorChangeTracking = true;
   window.App.editor.setValue('');
@@ -754,6 +764,7 @@ function resetEditorState() {
   state.comparedDiffDecisions = {};
   state.lastAppliedDiffAction = null;
   state.activeProposalReview = null;
+  state.mainReview = null;
   state.activeSidePanel = 'none';
   closePanels();
 }
@@ -1172,6 +1183,9 @@ async function bootstrap() {
     }
     if (window.App.comments && window.App.comments.bindComposerEvents) {
       window.App.comments.bindComposerEvents();
+    }
+    if (window.App.reviewMain && window.App.reviewMain.bindEvents) {
+      window.App.reviewMain.bindEvents();
     }
     window.App.comments.initSelectionListener();
     window.App.preview.initPreviewClickNavigation();
