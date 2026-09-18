@@ -162,6 +162,8 @@ def _build_single_line_row(line_type, line_text, line_number_key, line_number, r
 
 def _select_monotonic_matches(smaller, larger):
     """Map every line in smaller to the most similar ordered line in larger."""
+    smaller = [_tokenize(line) for line in smaller]
+    larger = [_tokenize(line) for line in larger]
     small_count = len(smaller)
     large_count = len(larger)
     impossible = float('-inf')
@@ -177,8 +179,8 @@ def _select_monotonic_matches(smaller, larger):
             if match_score != impossible:
                 match_score += difflib.SequenceMatcher(
                     None,
-                    _tokenize(smaller[small_index - 1]),
-                    _tokenize(larger[large_index - 1]),
+                    smaller[small_index - 1],
+                    larger[large_index - 1],
                 ).ratio()
             if match_score >= skip_score:
                 scores[small_index][large_index] = match_score
@@ -630,21 +632,23 @@ def _complete_decision_keys(diff_rows):
     }
 
 
-def _line_with_ending(text, line_number, fallback=''):
-    lines = text.splitlines(keepends=True)
+def _line_with_ending(lines, line_number, fallback=''):
     if line_number and 0 < line_number <= len(lines):
         return lines[line_number - 1]
     return fallback
 
 
 def _materialize_complete_document(base_text, candidate_text, diff_rows, decisions):
+    # ponytail: split each document once, not once per diff row.
+    base_lines = base_text.splitlines(keepends=True)
+    candidate_lines = candidate_text.splitlines(keepends=True)
     output = []
     for row in diff_rows:
         chunks = row.get('chunks', [])
         kind = chunks[0]['kind'] if chunks else None
         if row['type'] == 'context':
             output.append(_line_with_ending(
-                base_text, row.get('baseLine'), row.get('line', '')
+                base_lines, row.get('baseLine'), row.get('line', '')
             ))
             continue
         if kind == 'replace':
@@ -656,8 +660,8 @@ def _materialize_complete_document(base_text, candidate_text, diff_rows, decisio
             }
             line = _materialize_complete_replace_line(chunks, row_choices)
             source = _line_with_ending(
-                base_text, row.get('baseLine'),
-                _line_with_ending(candidate_text, row.get('candLine'), line),
+                base_lines, row.get('baseLine'),
+                _line_with_ending(candidate_lines, row.get('candLine'), line),
             )
             ending = source[len(_strip_line_endings(source)):]
             output.append(f'{line}{ending}')
@@ -666,14 +670,14 @@ def _materialize_complete_document(base_text, candidate_text, diff_rows, decisio
             chunk = chunks[0]
             if decisions[(row['rowId'], chunk['chunkId'])] == 'accept':
                 output.append(_line_with_ending(
-                    candidate_text, row.get('candLine'), row.get('line', '')
+                    candidate_lines, row.get('candLine'), row.get('line', '')
                 ))
             continue
         if kind == 'line-remove':
             chunk = chunks[0]
             if decisions[(row['rowId'], chunk['chunkId'])] == 'refuse':
                 output.append(_line_with_ending(
-                    base_text, row.get('baseLine'), row.get('line', '')
+                    base_lines, row.get('baseLine'), row.get('line', '')
                 ))
             continue
         raise RuntimeError(f"Unsupported diff row {row.get('rowId')}")

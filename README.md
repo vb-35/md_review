@@ -58,6 +58,7 @@ tail -f data/server.log
 - Default port: `18080`
 - App data lives under `data/`
 - If `md-reviewctl` is run from outside the repo, set `MD_REVIEW_ROOT` to the project root
+- Unsaved text is kept as a local browser draft for each user, project, and file. Reopening the file offers recovery. Drafts retain their original revision, so a changed project cannot be silently overwritten. The editor shows save failures and keeps text when its lock expires.
 
 For more deployment-oriented notes, see [deploy/README.md](/home/vbordier/md_review/deploy/README.md).
 
@@ -89,8 +90,8 @@ Set up a project once:
 1. Restart Codex and ask it to call `list_projects`. This logs in as `codex` and creates that app user if necessary.
 2. In the browser, open the project as its owner and share it with `codex` as an editor.
 3. Ask Codex to read the project, its version history, and open comment threads, then submit a revision proposal.
-4. Take the project lock, open an affected Markdown file, and select **Review**. The proposal appears in **Version History** as `Proposed · codex`; diff it against the selected published base and accept or refuse its chunks. Every decision is recomputed live in the editor and preview. You may use the normal **Save** button to publish an individual file immediately, but this is optional.
-5. Open **Revision proposals** on the project dashboard to decide any comment actions. Once every item is decided, select **Apply & close review**. Accepted file changes become ordinary versions, refused changes are left out, and accepted comment actions are applied. Decisions remain visible on the closed proposal, which its author or the project owner may delete.
+4. Open a proposal under **Revision proposals** on the project dashboard. The editor opens its changes alongside a review sidebar with file navigation, remaining decisions, and comment actions. Take the project lock and accept or refuse changes. Decisions are saved on the server, so you can move between files without publishing each one. Save any manual text edits before changing review decisions.
+5. Decide the comment actions in the same sidebar, then select **Apply & close review** once every item is decided. Accepted file changes become ordinary versions, refused changes are left out, and accepted comment actions are applied. You may still use **Save** to publish an individual file immediately. Decisions remain visible on the closed proposal, which its author or the project owner may delete.
 
 A proposal changes the live project through an optional per-file save or through **Apply & close review**. Both paths create ordinary versions attributed to the reviewing editor; all-refused files create no redundant version. Unrelated project commits or referenced comment-thread changes make a proposal stale. Project locks are five-minute leases, and the browser refreshes a held editing lease every minute. Legacy proposals published by older versions of the app remain retained as audit history.
 

@@ -241,10 +241,7 @@ function notifyUpdate(update) {
 }
 
 function init(container, initialValue = "") {
-  if (view) {
-    App._usingFallbackEditor = false;
-    return view;
-  }
+  if (view) return view;
   container.textContent = "";
   view = new EditorView({
     state: EditorState.create({
@@ -289,7 +286,6 @@ function init(container, initialValue = "") {
   });
   editable = true;
   view.dom.classList.add("cm-editor-owned");
-  App._usingFallbackEditor = false;
   view.scrollDOM.addEventListener("scroll", () => {
     scrollCallbacks.forEach((callback) => callback(getScrollInfo()));
   });
@@ -442,7 +438,7 @@ function replaceAllMatches() {
   return replaceAll(requireView());
 }
 
-const codeMirrorEditor = {
+App.editor = {
   init,
   getValue,
   setValue,
@@ -468,9 +464,5 @@ const codeMirrorEditor = {
   replaceNext: replaceNextMatch,
   replaceAll: replaceAllMatches
 };
-
-// A slow module load may finish after bootstrap has already initialized the fallback.
-// Keep that active editor instead of replacing it with an uninitialized CodeMirror adapter.
-if (!App._usingFallbackEditor) App.editor = codeMirrorEditor;
 
 if (typeof App._resolveEditorReady === "function") App._resolveEditorReady();

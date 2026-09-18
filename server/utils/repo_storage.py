@@ -562,20 +562,19 @@ def sanitize_asset_filename(filename):
 
 def list_project_tree(project_root):
     project_root = Path(project_root).resolve()
-    items = []
-    for path in sorted(project_root.rglob('*')):
-        rel_path = path.relative_to(project_root).as_posix()
-        if rel_path == '.git' or rel_path.startswith('.git/'):
-            continue
-        if rel_path == '.md-review' or rel_path.startswith('.md-review/'):
-            continue
-        items.append({
-            'path': rel_path,
-            'name': path.name,
-            'kind': 'dir' if path.is_dir() else 'file',
-            'isMarkdown': path.is_file() and path.suffix.lower() in ('.md', '.markdown'),
-        })
-    return items
+    paths = []
+    # ponytail: prune metadata before walking; no file-tree cache to invalidate.
+    for directory, dirs, files in os.walk(project_root):
+        if Path(directory) == project_root:
+            dirs[:] = [name for name in dirs if name not in RESERVED_PROJECT_PATHS]
+            files = [name for name in files if name not in RESERVED_PROJECT_PATHS]
+        paths.extend(Path(directory) / name for name in dirs + files)
+    return [{
+        'path': path.relative_to(project_root).as_posix(),
+        'name': path.name,
+        'kind': 'dir' if path.is_dir() else 'file',
+        'isMarkdown': path.is_file() and path.suffix.lower() in ('.md', '.markdown'),
+    } for path in sorted(paths)]
 
 
 def get_project_head_commit(project_root):

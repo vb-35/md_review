@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from functools import wraps
 
 from flask import Blueprint, jsonify, request, session
+from routes.auth import require_auth
 
 from models import (
     acquire_project_lock,
@@ -13,7 +14,6 @@ from models import (
     get_project_for_user,
     project_lock_is_expired,
     release_project_lock,
-    user_can_edit_project,
 )
 from utils.diff import apply_diff_decisions, compute_diff
 from utils.repo_storage import (
@@ -35,15 +35,6 @@ proposal_bp = Blueprint('proposals', __name__)
 MARKDOWN_EXTENSIONS = ('.md', '.markdown')
 PROPOSAL_STATUSES = {'pending', 'closed', 'accepted', 'rejected', 'stale'}
 DECISIONS = {'accept', 'refuse'}
-
-
-def require_auth(f):
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if 'user_id' not in session:
-            return jsonify({'error': 'Not authenticated'}), 401
-        return f(*args, **kwargs)
-    return decorated
 
 
 def with_proposal_project_lock(f):
@@ -68,7 +59,7 @@ def require_editor(project_id, user_id):
     project, error = get_project_or_error(project_id, user_id)
     if error:
         return None, error
-    if not user_can_edit_project(project_id, user_id):
+    if project['access_role'] not in ('owner', 'admin', 'editor'):
         return None, (jsonify({'error': 'Forbidden'}), 403)
     return project, None
 

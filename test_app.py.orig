@@ -9,7 +9,6 @@ import sys
 import tarfile
 import tempfile
 import zipfile
-from pathlib import Path
 from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'server'))
@@ -26,7 +25,6 @@ from utils.renderer import markdown_to_html
 from utils.repo_storage import (
     ensure_project_repo,
     git_commit_paths,
-    list_project_tree,
     normalize_repository_url,
     repository_title_from_url,
     write_project_file,
@@ -98,58 +96,6 @@ def test_invalid_identifier_rejected():
     print("PASS: invalid_identifier_rejected")
 
 
-def test_editor_fallback_event_is_logged():
-    client = APP.test_client()
-    with mock.patch.object(APP.logger, 'warning') as warning:
-        response = client.post(
-            '/api/client-events/editor-fallback',
-            json={'reason': 'codemirror-load-timeout'},
-            headers={'User-Agent': 'Fallback Test Browser'},
-        )
-    assert response.status_code == 204
-    warning.assert_called_once_with(
-        'editor_fallback_used reason=%s user=%s user_agent=%r',
-        'codemirror-load-timeout',
-        'anonymous',
-        'Fallback Test Browser',
-    )
-    print("PASS: editor_fallback_event_is_logged")
-
-
-def test_shared_auth_guard():
-    client = APP.test_client()
-    for path in ('/api/projects', '/api/projects/missing/files/versions', '/api/projects/missing/proposals'):
-        response = client.get(path)
-        assert response.status_code == 401, (path, response.data)
-        assert response.get_json() == {'error': 'Not authenticated'}
-    print("PASS: shared_auth_guard")
-
-
-def test_project_tree_prunes_metadata():
-    with tempfile.TemporaryDirectory() as directory:
-        root = Path(directory)
-        for name in ('.git/objects/hidden', '.md-review/comments/hidden',
-                     'docs/.git/visible', 'docs/note.MD', 'README.markdown', '.hidden'):
-            path = root / name
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.touch()
-        (root / 'linked').symlink_to(root / 'docs', target_is_directory=True)
-        with mock.patch('os.scandir', wraps=os.scandir) as scan:
-            tree = list_project_tree(root)
-        assert {Path(call.args[0]) for call in scan.call_args_list} == {
-            root, root / 'docs', root / 'docs/.git',
-        }
-        assert [item['path'] for item in tree] == [
-            '.hidden', 'README.markdown', 'docs', 'docs/.git',
-            'docs/.git/visible', 'docs/note.MD', 'linked',
-        ]
-        assert [item['path'] for item in tree if item['isMarkdown']] == [
-            'README.markdown', 'docs/note.MD',
-        ]
-        assert tree[-1]['kind'] == 'dir'
-    print("PASS: project_tree_prunes_metadata")
-
-
 def test_index_exposes_repo_actions():
     response = CLIENT.get('/')
     assert response.status_code == 200
@@ -165,13 +111,13 @@ def test_index_exposes_repo_actions():
     assert 'version-manage-list' in html
     assert 'btn-main-review-toggle' in html
     assert 'review-source' in html
-    assert 'css/style.css?v=20260918a' in html
-    assert 'js/app.js?v=20260918a' in html
+    assert 'css/style.css?v=20260731a' in html
+    assert 'js/app.js?v=20260731a' in html
     assert 'js/find-replace.js?v=20260722b' in html
-    assert 'js/editor.js?v=20260731a' in html
-    assert 'js/proposals.js?v=20260918a' in html
+    assert 'js/editor.js?v=20260722a' in html
+    assert 'js/proposals.js?v=20260729b' in html
     assert 'js/review-main.js?v=20260731a' in html
-    assert 'js/projects.js?v=20260918a' in html
+    assert 'js/projects.js?v=20260731a' in html
     assert 'js/comments.js?v=20260731a' in html
     print("PASS: index_exposes_repo_actions")
 
@@ -424,16 +370,6 @@ def test_review_main_js_helpers():
     print("PASS: review_main_js_helpers")
 
 
-def test_editor_workflow():
-    if not shutil.which('node'):
-        print('SKIP: editor_workflow (node not installed)')
-        return
-    subprocess.run(
-        ['node', os.path.join(os.path.dirname(__file__), 'webapp/js/workflow.test.js')],
-        check=True,
-    )
-
-
 def test_diff_and_renderer():
     diff = compute_diff("alpha beta\n", "alpha gamma\n")
     removed = next(row for row in diff if row['type'] == 'removed')
@@ -630,28 +566,11 @@ def test_diff_aligns_inserted_blank_before_replacement():
     print("PASS: diff_aligns_inserted_blank_before_replacement")
 
 
-def test_complete_review_preserves_line_endings():
-    base = 'unchanged\r\nold\r\nlast'
-    candidate = 'unchanged\r\nnew\r\ninserted\r\nlast'
-    rows = compute_diff(base, candidate)
-    for choice, expected in (('accept', candidate), ('refuse', base)):
-        decisions = [
-            {'rowId': row['rowId'], 'chunkId': chunk['chunkId'], 'decision': choice}
-            for row in rows for chunk in row.get('chunks', [])
-            if chunk['kind'] != 'replace' or row['type'] == 'added'
-        ]
-        assert apply_diff_decisions(base, candidate, base, decisions)['content'] == expected
-    print("PASS: complete_review_preserves_line_endings")
-
-
 if __name__ == '__main__':
     test_init_db()
     test_ensure_user()
     test_identifier_login_flow()
     test_invalid_identifier_rejected()
-    test_editor_fallback_event_is_logged()
-    test_shared_auth_guard()
-    test_project_tree_prunes_metadata()
     test_index_exposes_repo_actions()
     test_import_project()
     test_import_archive_project()
@@ -659,7 +578,6 @@ if __name__ == '__main__':
     test_comments_js_helpers()
     test_preview_js_helpers()
     test_review_main_js_helpers()
-    test_editor_workflow()
     test_diff_and_renderer()
     test_proposal_decision_annotates_rendered_diff()
     test_apply_diff_chunk_replace_and_conflict()
@@ -669,5 +587,4 @@ if __name__ == '__main__':
     test_apply_diff_decisions_atomically_mixes_insertions_and_deletions()
     test_apply_diff_decisions_materializes_complete_multiline_review()
     test_diff_aligns_inserted_blank_before_replacement()
-    test_complete_review_preserves_line_endings()
     print("ALL PASS")

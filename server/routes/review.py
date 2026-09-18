@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime, timezone
 
 from flask import Blueprint, jsonify, request, session
+from routes.auth import require_auth
 
 from models import get_db, get_project_for_user, project_lock_is_expired, user_can_edit_project
 from utils.diff import apply_diff_decisions, compute_diff
@@ -73,18 +74,6 @@ def load_version_candidate(conn, project_id, file_path, version_id):
     return candidate
 
 
-def require_auth(f):
-    from functools import wraps
-
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if 'user_id' not in session:
-            return jsonify({'error': 'Not authenticated'}), 401
-        return f(*args, **kwargs)
-
-    return decorated
-
-
 def require_project_access(project_id, user_id):
     if not get_project_for_user(project_id, user_id):
         return jsonify({'error': 'Not found'}), 404
@@ -92,10 +81,10 @@ def require_project_access(project_id, user_id):
 
 
 def require_project_edit(project_id, user_id):
-    access_error = require_project_access(project_id, user_id)
-    if access_error:
-        return access_error
-    if not user_can_edit_project(project_id, user_id):
+    project = get_project_for_user(project_id, user_id)
+    if not project:
+        return jsonify({'error': 'Not found'}), 404
+    if project['access_role'] not in ('owner', 'admin', 'editor'):
         return jsonify({'error': 'Forbidden'}), 403
     return None
 

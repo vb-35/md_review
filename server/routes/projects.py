@@ -7,6 +7,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 from flask import Blueprint, after_this_request, current_app, jsonify, request, send_file, session
+from routes.auth import require_auth
 
 from models import (
     acquire_project_lock,
@@ -48,18 +49,6 @@ from utils.repo_storage import (
 project_bp = Blueprint('projects', __name__)
 SHARE_ROLES = {'admin', 'editor', 'viewer'}
 MARKDOWN_EXTENSIONS = {'.md', '.markdown'}
-
-
-def require_auth(f):
-    from functools import wraps
-
-    @wraps(f)
-    def decorated(*args, **kwargs):
-        if 'user_id' not in session:
-            return jsonify({'error': 'Not authenticated'}), 401
-        return f(*args, **kwargs)
-
-    return decorated
 
 
 def require_locked_project_write(f):

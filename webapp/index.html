@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MD Review</title>
-  <link rel="stylesheet" href="css/style.css?v=20260731a">
+  <link rel="stylesheet" href="css/style.css?v=20260918a">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css">
   <link id="highlight-theme" rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/github-dark.min.css">
 </head>
@@ -155,7 +155,7 @@
                 <button id="btn-refresh-proposals" type="button">Refresh</button>
               </div>
               <div id="proposal-list"></div>
-              <div id="proposal-review" class="hidden"></div>
+              <div id="dashboard-proposal-host"><div id="proposal-review" class="hidden"></div></div>
             </div>
 
             <div id="share-card" class="detail-card hidden">
@@ -185,6 +185,7 @@
         <div id="editor-pane">
           <div class="pane-header">
             <span id="editor-file-label">Source</span>
+            <span id="save-status" role="status" aria-live="polite"></span>
             <div class="pane-actions">
               <input type="file" id="upload-image-input" class="hidden" accept="image/*,.svg">
               <button id="btn-upload-image" type="button">Upload Image</button>
@@ -217,9 +218,11 @@
         <div id="side-rail" class="hidden" data-active-panel="none">
           <div id="review-panel" class="panel side-panel hidden">
             <div class="panel-header">
-              <h3>Version History</h3>
+              <h3 id="review-panel-title">Version History</h3>
               <button id="btn-close-review" class="panel-close">&times;</button>
             </div>
+            <div id="editor-proposal-host"></div>
+            <div id="version-browser">
             <div id="version-tabs" class="panel-tabs" role="tablist" aria-label="Version history sections">
               <button id="btn-version-history-tab" type="button" role="tab" aria-selected="true">History</button>
               <button id="btn-version-manage-tab" type="button" role="tab" aria-selected="false" class="hidden">Manage</button>
@@ -242,6 +245,7 @@
             <div id="version-manage-view" class="version-tab-view hidden" role="tabpanel">
               <p class="version-manage-note">Rename, reassign, or remove version records. Removing a record does not change the current file or Git history.</p>
               <div id="version-manage-list"></div>
+            </div>
             </div>
           </div>
 
@@ -292,14 +296,14 @@
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/python.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/languages/bash.min.js"></script>
   <script src="js/scientific-preview.js?v=20260720b"></script>
-  <script src="js/app.js?v=20260731a"></script>
+  <script src="js/app.js?v=20260918a"></script>
   <script src="js/find-replace.js?v=20260722b"></script>
   <script src="js/preview.js?v=20260731a"></script>
   <script src="js/comments.js?v=20260731a"></script>
-  <script src="js/proposals.js?v=20260729b"></script>
+  <script src="js/proposals.js?v=20260918a"></script>
   <script src="js/review-main.js?v=20260731a"></script>
-  <script src="js/projects.js?v=20260731a"></script>
-  <script type="module" src="js/editor.js?v=20260722a"></script>
+  <script src="js/projects.js?v=20260918a"></script>
+  <script type="module" src="js/editor.js?v=20260731a"></script>
   <script>
     Promise.race([
       window.App.editorReady,

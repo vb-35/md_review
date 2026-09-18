@@ -33,19 +33,8 @@ function focusWithoutScroll(element) {
   }
 }
 
-function trackFallbackEditorUsage(reason) {
-  fetch(`${API}/client-events/editor-fallback`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    credentials: 'include',
-    keepalive: true,
-    body: JSON.stringify({ reason })
-  }).catch(() => {});
-}
-
-function createFallbackEditorAdapter(reason = 'codemirror-load-timeout') {
+function createFallbackEditorAdapter() {
   let textarea = null;
-  let usageTracked = false;
   const changeCallbacks = new Set();
   const scrollCallbacks = new Set();
   let searchQuery = '';
@@ -126,11 +115,6 @@ function createFallbackEditorAdapter(reason = 'codemirror-load-timeout') {
 
   const fallbackEditor = {
     init(container, initialValue = '') {
-      window.App._usingFallbackEditor = true;
-      if (!usageTracked) {
-        usageTracked = true;
-        trackFallbackEditorUsage(reason);
-      }
       const input = ensureTextarea(container);
       input.value = initialValue || '';
       return input;
@@ -275,7 +259,8 @@ function ensureEditorReady() {
   } catch (error) {
     console.error('Editor initialization failed, falling back to plain textarea editor.', error);
     if (!window.App._usingFallbackEditor) {
-      window.App.editor = createFallbackEditorAdapter('codemirror-initialization-failed');
+      window.App.editor = createFallbackEditorAdapter();
+      window.App._usingFallbackEditor = true;
     }
     window.App.editor.init(container, '');
   }
@@ -319,8 +304,6 @@ const state = {
   activeProposalReview: null,
   mainReview: null,
   editing: false,
-  saving: false,
-  reviewBusy: false,
   showResolved: false,
   commentSort: 'activity-desc',
   currentView: 'dashboard',
@@ -544,113 +527,10 @@ function insertAtCursor(text) {
 }
 
 function markEditorChanged() {
-  state.editing = !!state.currentFile && window.App.editor.getValue() !== state.currentFile.content;
-  persistDraft();
+  state.editing = true;
   updateSaveButton();
   if (window.App && window.App.preview.schedulePreview) {
     window.App.preview.schedulePreview();
-  }
-}
-
-function setSaveStatus(message) {
-  $('#save-status').textContent = message;
-}
-
-function draftKey() {
-  return `md-review.draft:${JSON.stringify([API, state.currentUser.id, state.currentProject.id, state.currentFile.filePath])}`;
-}
-
-function hasUnsavedChanges() {
-  if (!state.currentFile || !state.editing || window.App.editor.getValue() === state.currentFile.content) return false;
-  const review = state.activeProposalReview;
-  // ponytail: proposal decisions already live on the server; only manual text needs a draft.
-  return !review || window.App.editor.getValue() !== review.projectedContent
-    || state.comparedDiffBaselineContent !== state.currentFile.content;
-}
-
-function persistDraft() {
-  if (!state.currentUser || !state.currentProject || !state.currentFile) return true;
-  try {
-    if (hasUnsavedChanges()) {
-      localStorage.setItem(draftKey(), JSON.stringify({
-        content: window.App.editor.getValue(),
-        baseContent: state.currentFile.content,
-        baseCommitSha: state.currentFile.currentCommitSha,
-      }));
-      setSaveStatus('Unsaved · draft saved on this browser');
-    } else {
-      localStorage.removeItem(draftKey());
-      setSaveStatus(state.activeProposalReview ? 'Decisions saved · apply when review is complete' : 'Saved');
-    }
-    return true;
-  } catch {
-    setSaveStatus('Draft recovery unavailable · keep this page open until you save');
-    return false;
-  }
-}
-
-function restoreDraft() {
-  try {
-    const draft = JSON.parse(localStorage.getItem(draftKey()) || 'null');
-    if (!draft || typeof draft.content !== 'string' || typeof draft.baseContent !== 'string') return;
-    if (draft.content === state.currentFile.content) {
-      localStorage.removeItem(draftKey());
-      return;
-    }
-    const changed = draft.baseCommitSha !== state.currentFile.currentCommitSha;
-    if (!window.confirm(`Restore your unsaved draft for ${state.currentFile.filePath}?${changed ? '\nThe project changed since this draft. Saving will require reconciling those changes.' : ''}`)) return;
-    state.suspendEditorChangeTracking = true;
-    window.App.editor.setValue(draft.content);
-    state.suspendEditorChangeTracking = false;
-    state.currentFile.content = draft.baseContent;
-    state.currentFile.currentCommitSha = draft.baseCommitSha;
-    state.editing = true;
-    setSaveStatus(changed ? 'Draft recovered · project changed; reconcile before saving' : 'Draft recovered · unsaved');
-  } catch {
-    setSaveStatus('Could not recover the local draft');
-  }
-}
-
-function confirmLeaveEditor() {
-  if (state.saving || state.reviewBusy) {
-    setSaveStatus('Saving… wait before leaving this file');
-    return false;
-  }
-  if (!hasUnsavedChanges()) return true;
-  const saved = persistDraft();
-  return window.confirm(saved
-    ? 'Leave unsaved edits? A draft is kept on this browser for when you reopen the file.'
-    : 'Discard unsaved edits? A recovery draft could not be saved.');
-}
-
-async function saveCurrentFile() {
-  if (!state.currentProject || !state.currentFile || state.saving || state.reviewBusy) return;
-  const review = state.activeProposalReview;
-  const payload = {
-    path: state.currentFile.filePath,
-    content: window.App.editor.getValue(),
-    baseCommitSha: state.currentFile.currentCommitSha,
-  };
-  if (review && review.filePath === payload.path && review.needsSave) payload.proposalId = review.proposalId;
-  persistDraft();
-  state.saving = true;
-  updateSaveButton();
-  setSaveStatus('Saving…');
-  let saved = false;
-  try {
-    state.currentFile = await api('PUT', `/projects/${state.currentProject.id}/files/content`, payload);
-    saved = true;
-    state.activeProposalReview = null;
-    state.editing = window.App.editor.getValue() !== payload.content;
-    persistDraft();
-    await window.App.projects.refreshProjectState();
-    window.App.preview.updatePreview();
-  } catch (error) {
-    setSaveStatus(saved ? `Saved, but could not refresh: ${error.message}`
-      : `Save failed: ${error.message}. Your edits are still here.`);
-  } finally {
-    state.saving = false;
-    updateSaveButton();
   }
 }
 
@@ -746,7 +626,6 @@ function showDashboard() {
   $('#editor-screen').classList.add('hidden');
   $('#dashboard-screen').classList.remove('hidden');
   closePanels();
-  if (window.App.proposals.renderProposalList) window.App.proposals.renderProposalList();
   updateHeader();
 }
 
@@ -802,7 +681,7 @@ function updateEditorPermissions() {
   $('#btn-lock').disabled = lockDisabled;
   $('#btn-upload-image').disabled = !state.currentFile || !canEdit || !holdsCurrentLock();
   if (window.App.editor && window.App.editor.setEditable) {
-    window.App.editor.setEditable(!!state.currentFile && canEdit && holdsCurrentLock() && !state.reviewBusy);
+    window.App.editor.setEditable(!!state.currentFile && canEdit && holdsCurrentLock());
   }
   if (!state.currentProject || !canEdit) {
     $('#btn-lock').textContent = 'Lock';
@@ -822,7 +701,7 @@ function updateSaveButton() {
   const saveEnabled = !!state.currentFile
     && canEditCurrentProject()
     && holdsCurrentLock()
-    && state.editing && !state.saving && !state.reviewBusy;
+    && state.editing;
   $('#btn-save').disabled = !saveEnabled;
 }
 
@@ -855,11 +734,8 @@ function syncLockHeartbeat() {
       }
     } catch {
       stopLockHeartbeat();
-      if (state.currentProject && state.currentProject.id === projectId) {
-        persistDraft();
-        state.currentProject.lockExpiresAt = new Date(0).toISOString();
-        updateHeader();
-        setSaveStatus('Lock refresh failed · edits kept. Take the lock again to save.');
+      if (state.currentProject && state.currentProject.id === projectId && window.App.projects.refreshProjectState) {
+        await window.App.projects.refreshProjectState(state.currentFile ? state.currentFile.filePath : null);
       }
     }
   }, 60000);
@@ -930,12 +806,6 @@ window.App = {
     insertAtCursor,
     loadSettings,
     markEditorChanged,
-    confirmLeaveEditor,
-    hasUnsavedChanges,
-    persistDraft,
-    restoreDraft,
-    saveCurrentFile,
-    setSaveStatus,
     openSidePanel,
     resetEditorState,
     saveSettings,
@@ -958,16 +828,10 @@ window.App.editorReady = editorReady;
 window.App._resolveEditorReady = resolveEditorReady;
 if (!window.App.editor) {
   window.App.editor = createFallbackEditorAdapter();
+  window.App._usingFallbackEditor = true;
 }
-window.App._usingFallbackEditor = false;
 
 function wireEvents() {
-  window.addEventListener('beforeunload', (event) => {
-    if (!hasUnsavedChanges() && !state.saving && !state.reviewBusy) return;
-    persistDraft();
-    event.preventDefault();
-    event.returnValue = '';
-  });
   $('#login-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const username = $('#login-username').value.trim();
@@ -985,7 +849,6 @@ function wireEvents() {
   });
 
   $('#btn-logout').addEventListener('click', async () => {
-    if (!confirmLeaveEditor()) return;
     await api('POST', '/auth/logout');
     clearStoredIdentifier();
     state.currentUser = null;
@@ -996,7 +859,9 @@ function wireEvents() {
   });
 
   $('#btn-menu').addEventListener('click', async () => {
-    if (!confirmLeaveEditor()) return;
+    if (state.currentView === 'editor' && state.editing && !window.confirm('Discard unsaved changes and return to the projects dashboard?')) {
+      return;
+    }
     resetEditorState();
     showDashboard();
     if (state.currentProject) {
@@ -1102,19 +967,33 @@ function wireEvents() {
 
   $('#preview').addEventListener('scroll', () => window.App.preview.syncPreviewToEditor());
 
-  $('#btn-save').addEventListener('click', saveCurrentFile);
+  $('#btn-save').addEventListener('click', async () => {
+    if (!state.currentProject || !state.currentFile) return;
+    const review = state.activeProposalReview;
+    const payload = {
+      path: state.currentFile.filePath,
+      content: window.App.editor.getValue(),
+      baseCommitSha: state.currentFile.currentCommitSha
+    };
+    if (review && review.filePath === state.currentFile.filePath && review.needsSave) {
+      payload.proposalId = review.proposalId;
+    }
+    state.currentFile = await api('PUT', `/projects/${state.currentProject.id}/files/content`, payload);
+    state.activeProposalReview = null;
+    state.editing = false;
+    await window.App.projects.refreshProjectState(state.currentFile.filePath);
+    window.App.preview.updatePreview();
+  });
 
   $('#btn-lock').addEventListener('click', async () => {
     if (!state.currentProject || !canEditCurrentProject()) return;
     if (holdsCurrentLock()) {
+      if (state.editing && !window.confirm("Discard unsaved changes and release the project lock?")) return;
       await api('DELETE', `/projects/${state.currentProject.id}/lock`);
     } else {
       await api('POST', `/projects/${state.currentProject.id}/lock`);
     }
-    await window.App.projects.refreshProjectState();
-    if (state.currentProposal && state.currentFile && !hasUnsavedChanges()) {
-      await window.App.proposals.openProposalFile(state.currentFile.filePath);
-    }
+    await window.App.projects.refreshProjectState(state.currentFile ? state.currentFile.filePath : null);
   });
 
   $('#btn-upload-image').addEventListener('click', () => $('#upload-image-input').click());
@@ -1140,10 +1019,6 @@ function wireEvents() {
       return;
     }
     openSidePanel('review');
-    if (state.currentProposal) {
-      window.App.proposals.renderProposalDetail();
-      return;
-    }
     $('#btn-version-history-tab').click();
     await window.App.projects.loadVersions();
   });

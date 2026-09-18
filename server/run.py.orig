@@ -1,4 +1,4 @@
-from flask import Flask, redirect, request, send_from_directory, session
+from flask import Flask, redirect, send_from_directory
 from flask_cors import CORS
 from flask_session import Session
 from models import init_db, close_db
@@ -39,20 +39,6 @@ def create_app():
     app.register_blueprint(project_bp, url_prefix=api_prefix)
     app.register_blueprint(review_bp, url_prefix=api_prefix)
     app.register_blueprint(proposal_bp, url_prefix=api_prefix)
-
-    @app.post(f'{api_prefix}/client-events/editor-fallback')
-    def track_editor_fallback():
-        payload = request.get_json(silent=True) or {}
-        reason = payload.get('reason')
-        if reason not in {'codemirror-load-timeout', 'codemirror-initialization-failed'}:
-            reason = 'unknown'
-        app.logger.warning(
-            'editor_fallback_used reason=%s user=%s user_agent=%r',
-            reason,
-            session.get('username', 'anonymous'),
-            request.user_agent.string[:512],
-        )
-        return '', 204
 
     @app.route(f'{base_path}/')
     def index():

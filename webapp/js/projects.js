@@ -47,6 +47,7 @@
   }
 
   async function openProjectDetail(projectId) {
+    if (!App.helpers.confirmLeaveEditor()) return;
     state.selectedProjectId = projectId;
     state.currentProject = await App.api('GET', `/projects/${projectId}`);
     state.projectFiles = (await App.api('GET', `/projects/${projectId}/files`)).items;
@@ -185,7 +186,10 @@
 
   async function handleFileAction(item, action) {
     if (action === 'open') {
-      await openMarkdownFile(item.path);
+      if (await openMarkdownFile(item.path)) {
+        state.currentProposal = null;
+        App.proposals.renderProposalList();
+      }
       return;
     }
     if (!canEditCurrentProject()) {
@@ -251,13 +255,12 @@
   }
 
   async function openMarkdownFile(filePath, switchView = true) {
-    const active = state.activeProposalReview;
-    if (active && active.needsSave && active.filePath !== filePath) {
-      if (!window.confirm('Discard the unsaved reviewed changes and open another file?')) return;
-    }
+    if (!App.helpers.confirmLeaveEditor()) return false;
+    const project = await App.api('GET', `/projects/${state.currentProject.id}`);
+    const file = await App.api('GET', `/projects/${project.id}/files/content?path=${encodeURIComponent(filePath)}`);
     if (App.reviewMain && App.reviewMain.clear) App.reviewMain.clear();
-    state.currentProject = await App.api('GET', `/projects/${state.currentProject.id}`);
-    state.currentFile = await App.api('GET', `/projects/${state.currentProject.id}/files/content?path=${encodeURIComponent(filePath)}`);
+    state.currentProject = project;
+    state.currentFile = file;
     if (App.findReplace && App.findReplace.closeToolbar) App.findReplace.closeToolbar();
     state.suspendEditorChangeTracking = true;
     App.editor.setValue(state.currentFile.content || '');
@@ -269,6 +272,8 @@
     state.comparedDiffDecisions = {};
     state.lastAppliedDiffAction = null;
     state.activeProposalReview = null;
+    App.helpers.setSaveStatus('Saved');
+    App.helpers.restoreDraft();
     $('#diff-view').innerHTML = '';
     $('#diff-meta').textContent = '';
     $('#version-diff-actions').classList.add('hidden');
@@ -279,6 +284,7 @@
     }
     updateHeader();
     if (switchView) showEditor();
+    return true;
   }
 
   function decisionKey(rowId, chunkId) {
@@ -540,6 +546,8 @@
   async function projectActiveProposalReview(needsSave = true) {
     const review = state.activeProposalReview;
     if (!review || !state.currentFile || review.filePath !== state.currentFile.filePath) return;
+    if (App.helpers.hasUnsavedChanges()) return;
+    const previousContent = App.editor.getValue();
     const result = await App.api(
       'POST',
       `/projects/${state.currentProject.id}/proposals/${review.proposalId}/preview`,
@@ -548,14 +556,18 @@
         baselineContent: state.comparedDiffBaselineContent,
       }
     );
+    if (state.activeProposalReview !== review || App.editor.getValue() !== previousContent) return;
     const differsFromSavedFile = result.content !== (state.currentFile.content || '');
     state.suspendEditorChangeTracking = true;
     App.editor.setValue(result.content);
     state.suspendEditorChangeTracking = false;
     review.needsSave = needsSave;
+    review.projectedContent = result.content;
     state.editing = state.editing || needsSave || differsFromSavedFile;
+    App.helpers.persistDraft();
     App.preview.updatePreview();
     updateHeader();
+    if (App.proposals.renderProposalDetail) App.proposals.renderProposalDetail();
   }
 
   async function refreshActiveProposalReview(proposal) {
@@ -590,8 +602,11 @@
     let comparisonBaselineContent = sameWorkingReview
       ? state.comparedDiffBaselineContent
       : null;
+    if (App.helpers.hasUnsavedChanges() && !sameWorkingReview) {
+      App.helpers.setSaveStatus('Save your manual edits before starting a review');
+      return;
+    }
     if (active && active.needsSave && !sameWorkingReview) {
-      if (!window.confirm('Discard the unsaved reviewed changes and start another comparison?')) return;
       state.suspendEditorChangeTracking = true;
       App.editor.setValue(state.currentFile.content || '');
       state.suspendEditorChangeTracking = false;
@@ -613,6 +628,10 @@
     state.comparedDiffBaselineContent = comparisonBaselineContent;
     state.comparedDiffDecisions = result.proposalDecisions || {};
     state.lastAppliedDiffAction = null;
+    if (result.proposalId && (!state.currentProposal || state.currentProposal.id !== result.proposalId)) {
+      state.currentProposal = await App.api('GET', `/projects/${state.currentProject.id}/proposals/${result.proposalId}`);
+      App.proposals.renderProposalDetail();
+    }
     renderDiff(result.diff);
     const reviewHint = result.proposalId && !result.proposalBaseMatches
       ? ' · comparison only; select the proposal base to review'
@@ -627,6 +646,7 @@
         versionAId: result.versionAId,
         versionBId: result.versionBId,
         needsSave: false,
+        projectedContent: App.editor.getValue(),
       };
       if (Object.keys(state.comparedDiffDecisions).length) {
         await projectActiveProposalReview(!result.proposalDecisionSnapshotApplied);
@@ -638,6 +658,10 @@
 
   async function applyDiffDecision(rowId, chunkId, decision) {
     if (!state.currentProject || !state.currentFile || !state.comparedDiff) return;
+    if (state.comparedDiff.proposalId && (state.saving || App.helpers.hasUnsavedChanges())) {
+      App.helpers.setSaveStatus('Save your manual edits before changing review decisions');
+      return;
+    }
     if (!canEditCurrentProject()) {
       alert('Edit access required.');
       return;
@@ -654,32 +678,13 @@
         alert('Select the proposal base and ensure you have edit access.');
         return;
       }
-      const result = await App.api(
-        'PUT',
-        `/projects/${state.currentProject.id}/proposals/${state.comparedDiff.proposalId}/decisions`,
-        { items: [{
-          kind: 'diff',
-          filePath: state.currentFile.filePath,
-          itemId: key,
-          decision,
-        }] }
-      );
-      state.comparedDiffDecisions = nextDecisions;
       state.lastAppliedDiffAction = { rowId, chunkId, decision };
-      if (state.currentProposal && state.currentProposal.id === result.id) {
-        state.currentProposal = result;
-      }
-      state.activeProposalReview = {
-        ...(state.activeProposalReview || {}),
-        proposalId: state.comparedDiff.proposalId,
+      await App.proposals.saveDecisions([{
+        kind: 'diff',
         filePath: state.currentFile.filePath,
-        versionAId: state.comparedDiff.versionAId,
-        versionBId: state.comparedDiff.versionBId,
-        needsSave: true,
-      };
-      renderDiff(state.comparedDiff.diff);
-      await projectActiveProposalReview();
-      if (App.reviewMain && App.reviewMain.refresh) App.reviewMain.refresh();
+        itemId: key,
+        decision,
+      }]);
       return;
     }
 
@@ -723,6 +728,10 @@
 
   async function acceptAllDiffChunks(rowId) {
     if (!state.currentProject || !state.currentFile || !state.comparedDiff) return;
+    if (state.comparedDiff.proposalId && (state.saving || App.helpers.hasUnsavedChanges())) {
+      App.helpers.setSaveStatus('Save your manual edits before changing review decisions');
+      return;
+    }
     if (!canEditCurrentProject()) {
       alert('Edit access required.');
       return;
@@ -740,32 +749,13 @@
         alert('Select the proposal base and ensure you have edit access.');
         return;
       }
-      const result = await App.api(
-        'PUT',
-        `/projects/${state.currentProject.id}/proposals/${state.comparedDiff.proposalId}/decisions`,
-        { items: items.map((item) => ({
-          kind: 'diff',
-          filePath: state.currentFile.filePath,
-          itemId: decisionKey(item.rowId, item.chunkId),
-          decision: item.decision,
-        })) }
-      );
-      state.comparedDiffDecisions = nextDecisions;
       state.lastAppliedDiffAction = { decision: 'accept-all' };
-      if (state.currentProposal && state.currentProposal.id === result.id) {
-        state.currentProposal = result;
-      }
-      state.activeProposalReview = {
-        ...(state.activeProposalReview || {}),
-        proposalId: state.comparedDiff.proposalId,
+      await App.proposals.saveDecisions(items.map((item) => ({
+        kind: 'diff',
         filePath: state.currentFile.filePath,
-        versionAId: state.comparedDiff.versionAId,
-        versionBId: state.comparedDiff.versionBId,
-        needsSave: true,
-      };
-      renderDiff(state.comparedDiff.diff);
-      await projectActiveProposalReview();
-      if (App.reviewMain && App.reviewMain.refresh) App.reviewMain.refresh();
+        itemId: decisionKey(item.rowId, item.chunkId),
+        decision: item.decision,
+      })));
       return;
     }
 

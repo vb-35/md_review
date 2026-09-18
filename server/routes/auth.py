@@ -1,4 +1,5 @@
 import re
+from functools import wraps
 
 from flask import Blueprint, request, jsonify, session
 
@@ -6,6 +7,17 @@ from models import ensure_user
 
 auth_bp = Blueprint('auth', __name__)
 USERNAME_RE = re.compile(r'^[A-Za-z0-9._@-]{1,128}$')
+
+
+# ponytail: one session guard shared by all API blueprints.
+def require_auth(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if 'user_id' not in session:
+            return jsonify({'error': 'Not authenticated'}), 401
+        return f(*args, **kwargs)
+    return decorated
+
 
 def current_user_payload():
     return {'id': session['user_id'], 'username': session['username']}

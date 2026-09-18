@@ -45,6 +45,7 @@
     const list = $('#proposal-list');
     const review = $('#proposal-review');
     if (!list || !review) return;
+    placeReview();
     review.classList.toggle('hidden', !state.currentProposal);
     if (state.currentProposal) {
       renderProposalDetail();
@@ -71,15 +72,55 @@
   }
 
   async function openProposal(proposalId) {
+    if (!App.helpers.confirmLeaveEditor()) return;
     state.currentProposal = await App.api(
       'GET',
       `/projects/${state.currentProject.id}/proposals/${proposalId}`
     );
+    const firstPath = state.currentProposal.files[0]?.filePath || state.currentProposal.commentActions[0]?.filePath;
+    if (firstPath) {
+      await openProposalFile(firstPath);
+      return;
+    }
     renderProposalList();
   }
 
+  // ponytail: move the existing review controls between hosts; one set of decisions and handlers.
+  function placeReview() {
+    const inEditor = state.currentView === 'editor' && !!state.currentProposal;
+    $(inEditor ? '#editor-proposal-host' : '#dashboard-proposal-host').appendChild($('#proposal-review'));
+    $('#version-browser').classList.toggle('hidden', inEditor);
+    $('#review-panel-title').textContent = inEditor ? 'Proposal review' : 'Version History';
+  }
+
+  async function openProposalFile(filePath) {
+    try {
+      if (!await App.projects.openMarkdownFile(filePath)) return;
+      App.helpers.openSidePanel('review');
+      renderProposalDetail();
+      if (App.helpers.hasUnsavedChanges()) {
+        App.helpers.setSaveStatus('Draft recovered · save manual edits before reviewing');
+        return;
+      }
+      await App.projects.loadVersions();
+      const version = state.versions.find((item) => item.proposalId === state.currentProposal.id);
+      if (!version) return;
+      state.selectedHeadId = version.id;
+      $('#version-select-head').value = version.id;
+      App.projects.syncProposalBase(version.id);
+      await App.projects.compareSelectedVersions();
+      await App.reviewMain.show();
+    } catch (error) {
+      App.helpers.setSaveStatus(`Could not open proposal file: ${error.message}`);
+      renderProposalDetail();
+    }
+  }
+
   function closeProposal() {
+    if (!App.helpers.confirmLeaveEditor()) return;
     state.currentProposal = null;
+    App.helpers.resetEditorState();
+    App.helpers.showDashboard();
     $('#proposal-review').classList.add('hidden');
     $('#proposal-list').classList.remove('hidden');
     renderProposalList();
@@ -160,7 +201,7 @@
     return `<article class="proposal-comment-action">
       <div>
         <strong>${esc(capitalize(action.actionType))} comment thread</strong>
-        <span>${esc(action.filePath)} · ${esc(action.threadId)}</span>
+        <span><button type="button" data-proposal-file="${encodeURIComponent(action.filePath)}">${esc(action.filePath)}</button> · ${esc(action.threadId)}</span>
         ${description}
       </div>
       ${renderDecisionButtons('comment', '', action.id, action.decision, enabled)}
@@ -187,6 +228,8 @@
     const list = $('#proposal-list');
     const review = $('#proposal-review');
     if (!proposal || !review) return;
+    placeReview();
+    const inEditor = state.currentView === 'editor';
     list.classList.add('hidden');
     review.classList.remove('hidden');
     const reviewerEnabled = canReview(proposal);
@@ -194,7 +237,7 @@
     const staleNotice = proposal.staleReason
       ? `<div class="proposal-notice danger">${esc(proposal.staleReason)} Ask Codex to regenerate from the current project.</div>`
       : '';
-    const progress = `${proposal.review.decided} of ${proposal.review.required} items decided`;
+    const progress = `${proposal.review.required - proposal.review.decided} decisions remaining · ${proposal.review.decided} of ${proposal.review.required} decided`;
     const lockNotice = proposal.status === 'pending' && !holdsCurrentLock()
       ? '<div class="proposal-notice">Take the project lock to change decisions or close this review.</div>'
       : '';
@@ -209,7 +252,7 @@
           <p>${esc(proposal.summary || 'No summary provided.')}</p>
           <span>Proposed by ${esc(proposal.authorUsername)} · base ${esc(proposal.baseCommitSha.slice(0, 10))}</span>
         </div>
-        <strong>${esc(progress)}</strong>
+        <strong role="status">${esc(progress)}</strong>
       </div>
       ${staleNotice}
       ${lockNotice}
@@ -221,7 +264,12 @@
         ${reviewerEnabled ? `<button type="button" id="btn-close-proposal-review" class="primary"${proposal.review.canClose ? '' : ' disabled'}>Apply & close review</button>` : ''}
       </div>` : ''}
       <div class="proposal-files">
-        ${proposal.files.map((file) => renderFileDiff(file, reviewerEnabled)).join('')}
+        ${proposal.files.map((file) => inEditor ? `
+          <button type="button" class="proposal-row" data-proposal-file="${encodeURIComponent(file.filePath)}"
+            aria-current="${state.currentFile?.filePath === file.filePath ? 'true' : 'false'}">
+            <span>${esc(file.filePath)}</span>
+            <span>${file.reviewItems.filter((item) => !item.decision).length} remaining</span>
+          </button>` : renderFileDiff(file, reviewerEnabled)).join('')}
       </div>
       ${proposal.commentActions.length ? `<section class="proposal-comments">
         <h4>Comment actions</h4>
@@ -238,6 +286,9 @@
 
   function bindProposalDetailEvents() {
     $('#btn-close-proposal').addEventListener('click', closeProposal);
+    $('#proposal-review').querySelectorAll('[data-proposal-file]').forEach((button) => {
+      button.addEventListener('click', () => openProposalFile(decodeURIComponent(button.dataset.proposalFile)));
+    });
     $('#proposal-review').querySelectorAll('[data-proposal-decision]').forEach((button) => {
       button.addEventListener('click', async () => {
         await saveDecisions([{
@@ -264,6 +315,13 @@
 
   async function saveDecisions(items) {
     if (!items.length) return;
+    if (state.reviewBusy) return;
+    if (state.saving || App.helpers.hasUnsavedChanges()) {
+      App.helpers.setSaveStatus('Save your manual edits before changing review decisions');
+      return;
+    }
+    state.reviewBusy = true;
+    App.helpers.updateEditorPermissions();
     try {
       state.currentProposal = await App.api(
         'PUT',
@@ -274,25 +332,37 @@
       renderProposalDetail();
     } catch (error) {
       alert(error.message);
-      await openProposal(state.currentProposal.id);
+    } finally {
+      state.reviewBusy = false;
+      App.helpers.updateEditorPermissions();
     }
   }
 
   async function closeProposalReview() {
+    if (state.reviewBusy) return;
+    if (state.saving || App.helpers.hasUnsavedChanges()) {
+      App.helpers.setSaveStatus('Save your manual edits before applying the proposal');
+      return;
+    }
     if (!window.confirm('Apply accepted file changes as new versions, apply accepted comment actions, and close this review?')) return;
+    state.reviewBusy = true;
+    App.helpers.updateEditorPermissions();
     try {
       const proposalId = state.currentProposal.id;
-      const refreshFilePath = state.activeProposalReview
-        && state.activeProposalReview.proposalId === proposalId
-        && state.currentFile
+      const refreshFilePath = state.currentFile
         ? state.currentFile.filePath
         : null;
       state.currentProposal = await App.api(
         'POST',
         `/projects/${state.currentProject.id}/proposals/${proposalId}/close`
       );
-      if (refreshFilePath) state.activeProposalReview = null;
-      await App.projects.refreshProjectState(refreshFilePath);
+      if (refreshFilePath) {
+        state.activeProposalReview = null;
+        state.editing = false;
+      }
+      await App.projects.refreshProjectState();
+      state.reviewBusy = false;
+      if (refreshFilePath) await App.projects.openMarkdownFile(refreshFilePath, false);
       await loadProposals(false);
       const closed = state.proposals.find((item) => item.id === state.currentProposal.id);
       if (closed) state.currentProposal = await App.api(
@@ -302,11 +372,14 @@
       renderProposalList();
     } catch (error) {
       alert(error.message);
-      await openProposal(state.currentProposal.id);
+    } finally {
+      state.reviewBusy = false;
+      App.helpers.updateEditorPermissions();
     }
   }
 
   async function deleteProposal() {
+    if (!App.helpers.confirmLeaveEditor()) return;
     const proposal = state.currentProposal;
     if (!proposal || !window.confirm('Delete this proposal record permanently? Saved project files and versions will not be changed.')) return;
     try {
@@ -315,6 +388,8 @@
         `/projects/${state.currentProject.id}/proposals/${proposal.id}`
       );
       state.currentProposal = null;
+      if (!App.helpers.hasUnsavedChanges()) App.helpers.resetEditorState();
+      App.helpers.showDashboard();
       await loadProposals();
       if (state.currentFile && state.activeSidePanel === 'review') {
         await App.projects.loadVersions();
@@ -345,7 +420,9 @@
     closeProposal,
     loadProposals,
     openProposal,
+    openProposalFile,
     renderProposalDetail,
     renderProposalList,
+    saveDecisions,
   };
 })(window);
